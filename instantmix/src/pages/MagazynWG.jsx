@@ -165,17 +165,56 @@ export default function MagazynWG() {
   function openEdit(good) { setEditGood(good); setEditForm({ received_date: good.received_date, quantity_kg: good.original_kg, location: good.location || '', notes: good.notes || '', form: good.form || 'luz', unit_type: good.unit_type || 'big_bag', unit_weight_kg: good.unit_weight_kg ?? '', unit_count: good.unit_count ?? '', pallets: good.pallets ?? '', bags_per_pallet: good.bags_per_pallet ?? '' }); setError(''); setEditModal(true) }
 
   async function saveEdit() {
-    if (!editForm.received_date || !editForm.quantity_kg) { setError('Uzupełnij wymagane pola'); return }
+    const isSpak = editForm.form === 'spakowane'
+    // dla spakowanego ilość wynika z: palety × jednostek na palecie × waga jednostki
+    const computedPacked = (parseInt(editForm.pallets)||0) * (parseInt(editForm.bags_per_pallet)||0) * (parseFloat(editForm.unit_weight_kg)||0)
+    const newQty = (isSpak && computedPacked > 0) ? parseFloat(computedPacked.toFixed(3)) : parseFloat(editForm.quantity_kg)
+    const oldQty = parseFloat(editGood.original_kg || 0)
+
+    if (!editForm.received_date) { setError('Podaj datę przyjęcia'); return }
+    if (!newQty || newQty <= 0) { setError(isSpak ? 'Podaj pakowanie (palety × jednostki × waga)' : 'Podaj ilość (kg)'); return }
     setSavingEdit(true); setError('')
+
+    // SPAKOWANY: zmiana ilości → przelicz zużycie luzu (packing_consumed)
+    if (isSpak && editGood.packing_operation_id && Math.abs(newQty - oldQty) > 0.0005) {
+      const opId = editGood.packing_operation_id
+      const { data: oldCons } = await supabase.from('packing_consumed').select('quantity_kg').eq('packing_operation_id', opId)
+      const oldConsumedTotal = (oldCons||[]).reduce((s,r)=> s + parseFloat(r.quantity_kg||0), 0)
+      const { data: vfg } = await supabase.from('v_finished_goods').select('*').order('received_date', { ascending: true })
+      const luzAvailNow = (vfg||[]).filter(g => g.recipe_id === editGood.recipe_id && (g.form==='luz' || !g.form)).reduce((s,g)=> s + parseFloat(g.available_kg||0), 0)
+      const maxPossible = luzAvailNow + oldConsumedTotal   // po zwolnieniu starego zużycia
+      if (newQty > maxPossible + 0.0005) {
+        setSavingEdit(false)
+        setError(`Za mało luzu, by spakować ${newQty.toLocaleString('pl-PL')} kg. Maksymalnie: ${maxPossible.toFixed(3)} kg.`)
+        return
+      }
+      const { error: delErr } = await supabase.from('packing_consumed').delete().eq('packing_operation_id', opId)
+      if (delErr) { setSavingEdit(false); setError(delErr.message); return }
+      const { data: vfg2 } = await supabase.from('v_finished_goods').select('*').order('received_date', { ascending: true })
+      const luzFresh = (vfg2||[]).filter(g => g.recipe_id === editGood.recipe_id && (g.form==='luz' || !g.form) && parseFloat(g.available_kg) > 0.0005)
+      let remaining = newQty
+      const consumed = []
+      for (const g of luzFresh) {
+        if (remaining <= 0.0005) break
+        const take = Math.min(remaining, parseFloat(g.available_kg))
+        if (take > 0.0005) { consumed.push({ packing_operation_id: opId, source_finished_good_id: g.id, quantity_kg: parseFloat(take.toFixed(3)) }); remaining = parseFloat((remaining - take).toFixed(3)) }
+      }
+      if (consumed.length) {
+        const { error: insErr } = await supabase.from('packing_consumed').insert(consumed)
+        if (insErr) { setSavingEdit(false); setError(insErr.message); return }
+      }
+      await supabase.from('packing_operations').update({ total_packed_kg: newQty }).eq('id', opId)
+    }
+
     const { error: err } = await supabase.from('finished_goods').update({
       received_date: editForm.received_date,
-      quantity_kg: parseFloat(editForm.quantity_kg),
+      quantity_kg: newQty,
       location: editForm.location || null,
       notes: editForm.notes || null,
       form: editForm.form || 'luz',
       unit_type: editForm.unit_type || 'big_bag',
       unit_weight_kg: editForm.unit_weight_kg === '' ? null : parseFloat(editForm.unit_weight_kg),
-      unit_count: editForm.form === 'spakowane'
+      unit_count: isSpak
         ? (((parseInt(editForm.pallets)||0) * (parseInt(editForm.bags_per_pallet)||0)) || null)
         : 1,
       pallets: editForm.pallets === '' ? null : parseInt(editForm.pallets),
@@ -906,7 +945,11 @@ export default function MagazynWG() {
                 return <>Liczba jednostek (razem): <b>{u || '—'}</b>{u>0 && w>0 ? <> · łącznie <b>{(u*w).toLocaleString('pl-PL')} kg</b></> : ''}</>
               })()}
             </div>
-            <div className="muted" style={{ fontSize:11, marginTop:6 }}>Np. „1 big bag 700 kg" lub „15 worków × 20 kg". Pole opisowe — nie zmienia ilości (kg).</div>
+            <div className="muted" style={{ fontSize:11, marginTop:6 }}>
+              {editForm.form === 'spakowane'
+                ? 'Dla spakowanego ilość (kg) wynika z: palety × jednostek na palecie × waga. Zmiana przeliczy zużycie luzu (np. domknie big bag do 0).'
+                : 'Np. „1 big bag 700 kg" lub „15 worków × 20 kg". Dla luzu to pole opisowe — nie zmienia ilości (kg).'}
+            </div>
           </div>
           <div className="modal-footer">
             <button className="btn" onClick={() => setEditModal(false)}>Anuluj</button>
