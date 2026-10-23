@@ -6,7 +6,7 @@ const TYPES = ['worek','paleta','folia','etykieta','inne']
 const UNITS = ['szt.','kg','m','rolka']
 const CORR_LABELS = { korekta_inwentury:'Korekta inwentury', ubytek_uszkodzenie:'Ubytek / uszkodzenie', zwrot_do_dostawcy:'Zwrot do dostawcy', inne:'Inne' }
 
-const EMPTY_MAT = { code:'', name:'', type:'worek', unit:'szt.', min_stock:'', notes:'' }
+const EMPTY_MAT = { code:'', name:'', type:'worek', unit:'szt.', segment_code:'', min_stock:'', notes:'' }
 const EMPTY_RCP = { packaging_material_id:'', supplier_id:'', delivery_lot:'', quantity:'', unit_price:'', received_date:new Date().toISOString().slice(0,10), warehouse_location:'', notes:'' }
 const EMPTY_CORR = { packaging_batch_id:'', correction_type:'korekta_inwentury', delta_qty:'', reason:'', event_date:new Date().toISOString().slice(0,10) }
 
@@ -82,11 +82,11 @@ export default function MagazynOpakowan() {
 
   // ── Katalog materiału ──
   function openNewMat() { setMatForm(EMPTY_MAT); setMatEdit(false); setError(''); setMatModal(true) }
-  function openEditMat(m) { setMatForm({ id:m.id, code:m.code, name:m.name, type:m.type||'worek', unit:m.unit||'szt.', min_stock:m.min_stock??'', notes:m.notes||'' }); setMatEdit(true); setError(''); setMatModal(true) }
+  function openEditMat(m) { setMatForm({ id:m.id, code:m.code, name:m.name, type:m.type||'worek', unit:m.unit||'szt.', segment_code:m.segment_code||'', min_stock:m.min_stock??'', notes:m.notes||'' }); setMatEdit(true); setError(''); setMatModal(true) }
   async function saveMat() {
     if (!matForm.code.trim() || !matForm.name.trim()) { setError('Kod i nazwa są wymagane'); return }
     setSaving(true); setError('')
-    const payload = { code:matForm.code.trim(), name:matForm.name.trim(), type:matForm.type, unit:matForm.unit, min_stock: matForm.min_stock===''?0:parseFloat(matForm.min_stock), notes:matForm.notes||null }
+    const payload = { code:matForm.code.trim(), name:matForm.name.trim(), type:matForm.type, unit:matForm.unit, segment_code: matForm.segment_code? matForm.segment_code.trim().toUpperCase() : null, min_stock: matForm.min_stock===''?0:parseFloat(matForm.min_stock), notes:matForm.notes||null }
     if (matEdit) {
       const { error: err } = await supabase.from('packaging_materials').update({ ...payload, updated_at:new Date().toISOString() }).eq('id', matForm.id)
       if (err) { setError(err.message); setSaving(false); return }
@@ -197,7 +197,7 @@ export default function MagazynOpakowan() {
                     <td style={{ textAlign:'center' }}>
                       <button onClick={() => setExpandedId(isExpanded?null:r.id)} style={{ background:'none', border:'none', cursor:'pointer', fontSize:12, color:'#5F5E5A', padding:'2px 4px' }}>{isExpanded?'▲':'▼'}</button>
                     </td>
-                    <td><span className="lot">{r.code}</span></td>
+                    <td><span className="lot">{r.code}</span>{r.segment_code && <span className="badge b-purple" style={{ fontSize:9, marginLeft:4 }}>{r.segment_code}</span>}</td>
                     <td style={{ fontWeight:500 }}>{r.name}</td>
                     <td style={{ textTransform:'capitalize' }}><span className="badge b-info" style={{ fontSize:10 }}>{r.type||'—'}</span></td>
                     <td className="muted" style={{ fontSize:12 }}>{r.unit}</td>
@@ -289,6 +289,7 @@ export default function MagazynOpakowan() {
             <div><label>Jednostka</label><select value={matForm.unit} onChange={e => mf('unit',e.target.value)}>{UNITS.map(u => <option key={u} value={u}>{u}</option>)}</select></div>
             <div><label>Minimum</label><input type="number" step="1" min="0" value={matForm.min_stock} onChange={e => mf('min_stock',e.target.value)} /></div>
           </div>
+          <div><label>Kod segmentu BOM <span className="muted" style={{ fontWeight:400 }}>(np. WP = worek papierowy, PE = paleta euro)</span></label><input value={matForm.segment_code} onChange={e => mf('segment_code',e.target.value)} placeholder="np. WP" style={{ textTransform:'uppercase', maxWidth:160 }} /></div>
           <div><label>Uwagi</label><input value={matForm.notes} onChange={e => mf('notes',e.target.value)} placeholder="opcjonalne" /></div>
           <div className="modal-footer">
             <button className="btn" onClick={() => setMatModal(false)}>Anuluj</button>
