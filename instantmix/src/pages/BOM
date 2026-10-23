@@ -1,0 +1,298 @@
+import React, { useState, useEffect } from 'react'
+import { supabase } from '../lib/supabase'
+import { useAuth } from '../App'
+
+const EMPTY_BOM = { client_id:'', recipe_id:'', name:'', gramatura_kg:'', units_per_pallet:'', unit_material_id:'', pallet_material_id:'', status:'aktywny', notes:'' }
+
+function fmtGram(g) {
+  const n = parseFloat(g)
+  if (isNaN(n)) return ''
+  return Number.isInteger(n) ? String(n) : String(n).replace(/\.?0+$/,'')
+}
+
+export default function BOM() {
+  const { profile } = useAuth()
+  const isAdmin = profile?.role === 'admin'
+  const canEdit = true // dostępy później
+
+  const [boms, setBoms] = useState([])
+  const [bomItems, setBomItems] = useState({})       // bom_id -> [items]
+  const [clients, setClients] = useState([])
+  const [recipes, setRecipes] = useState([])
+  const [materials, setMaterials] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [filterStatus, setFilterStatus] = useState('aktywne')
+
+  const [modal, setModal] = useState(false)
+  const [editMode, setEditMode] = useState(false)
+  const [form, setForm] = useState(EMPTY_BOM)
+  const [items, setItems] = useState([])
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState(null)
+
+  useEffect(() => { load() }, [])
+
+  async function load() {
+    setLoading(true)
+    const [{ data: b }, { data: bi }, { data: c }, { data: r }, { data: m }] = await Promise.all([
+      supabase.from('bom').select('*, clients(number,name), recipes(code,name,version), unit:unit_material_id(code,name,segment_code), pallet:pallet_material_id(code,name,segment_code)').order('created_at', { ascending:false }),
+      supabase.from('bom_items').select('*, packaging_materials(code,name,unit)'),
+      supabase.from('clients').select('id,number,name').order('name'),
+      supabase.from('recipes').select('id,code,name,version,client_id,status').neq('status','zarchiwizowana').order('code'),
+      supabase.from('packaging_materials').select('id,code,name,type,unit,segment_code').eq('active',true).order('code'),
+    ])
+    setBoms(b || [])
+    setClients(c || [])
+    setRecipes(r || [])
+    setMaterials(m || [])
+    const map = {}
+    ;(bi || []).forEach(x => { (map[x.bom_id] = map[x.bom_id] || []).push(x) })
+    setBomItems(map)
+    setLoading(false)
+  }
+
+  const f = (k, v) => setForm(p => ({ ...p, [k]: v }))
+
+  const filtered = boms.filter(b => {
+    const q = search.toLowerCase()
+    const matchQ = !q || (b.code_ext||'').toLowerCase().includes(q) || (b.clients?.name||'').toLowerCase().includes(q) || (b.recipes?.name||'').toLowerCase().includes(q)
+    const matchStatus = filterStatus==='wszystkie' ? true : filterStatus==='aktywne' ? b.status==='aktywny' : b.status==='wycofany'
+    return matchQ && matchStatus
+  })
+
+  // receptury danego klienta (lub bez przypisanego klienta)
+  const recipesForClient = form.client_id
+    ? recipes.filter(r => r.client_id === form.client_id || !r.client_id)
+    : recipes
+
+  // Auto-kod wydłużony
+  const selRecipe = recipes.find(r => r.id === form.recipe_id)
+  const selUnit = materials.find(m => m.id === form.unit_material_id)
+  const selPallet = materials.find(m => m.id === form.pallet_material_id)
+  const autoCode = (() => {
+    const parts = []
+    if (selRecipe?.code) parts.push(selRecipe.code)
+    if (selUnit?.segment_code) parts.push(selUnit.segment_code)
+    const g = fmtGram(form.gramatura_kg); if (g) parts.push(g)
+    if (selPallet?.segment_code) parts.push(selPallet.segment_code)
+    return parts.join('/')
+  })()
+
+  function openNew() {
+    setForm(EMPTY_BOM); setItems([]); setEditMode(false); setError(''); setModal(true)
+  }
+  function openEdit(b) {
+    setForm({ id:b.id, client_id:b.client_id||'', recipe_id:b.recipe_id, name:b.name||'', gramatura_kg:b.gramatura_kg??'', units_per_pallet:b.units_per_pallet??'', unit_material_id:b.unit_material_id||'', pallet_material_id:b.pallet_material_id||'', status:b.status||'aktywny', notes:b.notes||'' })
+    setItems((bomItems[b.id]||[]).map(it => ({ id:it.id, packaging_material_id:it.packaging_material_id, qty_per:it.qty_per, per:it.per })))
+    setEditMode(true); setError(''); setModal(true)
+  }
+
+  function addItem() { setItems(p => [...p, { packaging_material_id:'', qty_per:'1', per:'sztuka' }]) }
+  function updItem(i, k, v) { setItems(p => p.map((it,idx) => idx===i ? { ...it, [k]:v } : it)) }
+  function rmItem(i) { setItems(p => p.filter((_,idx) => idx!==i)) }
+
+  async function save() {
+    if (!form.client_id) { setError('Wybierz klienta'); return }
+    if (!form.recipe_id) { setError('Wybierz recepturę'); return }
+    if (!form.gramatura_kg || parseFloat(form.gramatura_kg)<=0) { setError('Podaj gramaturę (wagę jednostki)'); return }
+    if (!form.unit_material_id) { setError('Wybierz opakowanie jednostkowe (worek)'); return }
+    setSaving(true); setError('')
+    const payload = {
+      client_id: form.client_id,
+      recipe_id: form.recipe_id,
+      name: form.name || (selRecipe ? selRecipe.name : null),
+      code_ext: autoCode || null,
+      gramatura_kg: parseFloat(form.gramatura_kg),
+      units_per_pallet: form.units_per_pallet==='' ? null : parseInt(form.units_per_pallet),
+      unit_material_id: form.unit_material_id,
+      pallet_material_id: form.pallet_material_id || null,
+      status: form.status,
+      notes: form.notes || null,
+    }
+    let bomId = form.id
+    if (editMode) {
+      const { error: err } = await supabase.from('bom').update({ ...payload, updated_at:new Date().toISOString() }).eq('id', form.id)
+      if (err) { setError(err.message); setSaving(false); return }
+      await supabase.from('bom_items').delete().eq('bom_id', form.id)
+    } else {
+      const { data: rec, error: err } = await supabase.from('bom').insert({ ...payload, created_by:profile?.id }).select().single()
+      if (err) { setError(err.message); setSaving(false); return }
+      bomId = rec.id
+    }
+    const validItems = items.filter(it => it.packaging_material_id)
+    if (validItems.length) {
+      const { error: iErr } = await supabase.from('bom_items').insert(validItems.map(it => ({
+        bom_id: bomId, packaging_material_id: it.packaging_material_id,
+        qty_per: it.qty_per===''?1:parseFloat(it.qty_per), per: it.per||'sztuka',
+      })))
+      if (iErr) { setError(iErr.message); setSaving(false); return }
+    }
+    setSaving(false); setModal(false); load()
+  }
+
+  async function deleteBom(b) {
+    await supabase.from('bom').delete().eq('id', b.id)  // kaskadowo usuwa bom_items
+    setConfirmDelete(null); load()
+  }
+
+  const matLabel = m => `${m.code} — ${m.name}`
+
+  return (
+    <div>
+      <div className="page-header">
+        <div><div className="page-title">BOM — specyfikacje opakowania</div><div className="page-sub">Receptura + opakowania dla klienta → kod wyrobu</div></div>
+        <div className="flex" style={{ gap:8 }}>
+          <input className="search" placeholder="Szukaj BOM, klient, receptura..." value={search} onChange={e => setSearch(e.target.value)} style={{ width:240 }} />
+          {canEdit && <button className="btn btn-primary btn-sm" onClick={openNew}>+ Nowy BOM</button>}
+        </div>
+      </div>
+
+      <div className="flex" style={{ marginBottom:10, gap:6 }}>
+        {[['aktywne','Aktywne'],['wycofane','Wycofane'],['wszystkie','Wszystkie']].map(([val,label]) => (
+          <button key={val} className="btn btn-sm" onClick={() => setFilterStatus(val)}
+            style={{ background:filterStatus===val?'#1D9E75':undefined, color:filterStatus===val?'#fff':undefined, borderColor:filterStatus===val?'#1D9E75':undefined }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ background:'#fff', border:'0.5px solid #D3D1C7', borderRadius:8, overflowX:'auto' }}>
+        <table style={{ minWidth:1000 }}>
+          <thead style={{ position:'sticky', top:0, zIndex:10, background:'#fff' }}><tr>
+            <th>Kod BOM</th><th>Klient</th><th>Receptura</th>
+            <th style={{ textAlign:'right' }}>Gramatura</th>
+            <th style={{ textAlign:'right' }}>Szt./pal.</th>
+            <th>Worek</th><th>Paleta</th>
+            <th style={{ textAlign:'center' }}>Dodatki</th>
+            <th>Status</th><th></th>
+          </tr></thead>
+          <tbody>
+            {loading && <tr><td colSpan={10} style={{ textAlign:'center', padding:24, color:'#888' }}>Ładowanie...</td></tr>}
+            {!loading && filtered.length===0 && <tr><td colSpan={10} style={{ textAlign:'center', padding:24, color:'#888' }}>Brak BOM-ów</td></tr>}
+            {!loading && filtered.map(b => (
+              <tr key={b.id} style={{ opacity: b.status==='wycofany'?0.6:1 }}>
+                <td><span className="lot">{b.code_ext||'—'}</span></td>
+                <td style={{ fontSize:13 }}>{b.clients ? (b.clients.number ? b.clients.number+' — ' : '')+b.clients.name : '—'}</td>
+                <td><div style={{ fontWeight:500, fontSize:13 }}>{b.recipes?.name}</div><div className="muted" style={{ fontSize:11 }}>{b.recipes?.code} · {b.recipes?.version}</div></td>
+                <td style={{ textAlign:'right', fontWeight:500 }}>{fmtGram(b.gramatura_kg)} kg</td>
+                <td style={{ textAlign:'right' }}>{b.units_per_pallet||'—'}</td>
+                <td style={{ fontSize:12 }}>{b.unit ? `${b.unit.code}${b.unit.segment_code?' ('+b.unit.segment_code+')':''}` : '—'}</td>
+                <td style={{ fontSize:12 }}>{b.pallet ? `${b.pallet.code}${b.pallet.segment_code?' ('+b.pallet.segment_code+')':''}` : '—'}</td>
+                <td style={{ textAlign:'center' }}><span className="badge b-info">{(bomItems[b.id]||[]).length}</span></td>
+                <td>{b.status==='aktywny' ? <span className="badge b-ok">Aktywny</span> : <span className="badge b-gray">Wycofany</span>}</td>
+                <td><div className="flex" style={{ gap:4 }}>
+                  {canEdit && <button className="btn btn-sm" onClick={() => openEdit(b)}>Edytuj</button>}
+                  {isAdmin && <button className="btn btn-sm btn-danger" onClick={() => setConfirmDelete(b)}>Usuń</button>}
+                </div></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Modal BOM */}
+      <div className={`modal-overlay ${modal?'open':''}`} onClick={e => e.target===e.currentTarget && setModal(false)}>
+        <div className="modal" style={{ maxWidth:680 }}>
+          <div className="modal-title">{editMode?'Edytuj BOM':'Nowy BOM'}</div>
+          {error && <div className="err-box">{error}</div>}
+
+          <div className="fr">
+            <div><label>Klient *</label>
+              <select value={form.client_id} onChange={e => { f('client_id', e.target.value); f('recipe_id','') }}>
+                <option value="">— wybierz klienta —</option>
+                {clients.map(c => <option key={c.id} value={c.id}>{c.number ? c.number+' — ' : ''}{c.name}</option>)}
+              </select>
+            </div>
+            <div><label>Receptura *</label>
+              <select value={form.recipe_id} onChange={e => f('recipe_id', e.target.value)} disabled={!form.client_id}>
+                <option value="">— wybierz recepturę —</option>
+                {recipesForClient.map(r => <option key={r.id} value={r.id}>{r.code} — {r.name} ({r.version})</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="fr">
+            <div><label>Gramatura — waga jednostki (kg) *</label><input type="number" step="0.001" value={form.gramatura_kg} onChange={e => f('gramatura_kg',e.target.value)} placeholder="np. 10" /></div>
+            <div><label>Sztuk na palecie</label><input type="number" step="1" min="0" value={form.units_per_pallet} onChange={e => f('units_per_pallet',e.target.value)} placeholder="np. 40" /></div>
+          </div>
+
+          <div className="fr">
+            <div><label>Opakowanie jednostkowe (worek) *</label>
+              <select value={form.unit_material_id} onChange={e => f('unit_material_id',e.target.value)}>
+                <option value="">— wybierz —</option>
+                {materials.map(m => <option key={m.id} value={m.id}>{matLabel(m)}{m.segment_code?` [${m.segment_code}]`:''}</option>)}
+              </select>
+            </div>
+            <div><label>Paleta</label>
+              <select value={form.pallet_material_id} onChange={e => f('pallet_material_id',e.target.value)}>
+                <option value="">— brak —</option>
+                {materials.map(m => <option key={m.id} value={m.id}>{matLabel(m)}{m.segment_code?` [${m.segment_code}]`:''}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div style={{ background:'#F7F6F1', border:'0.5px solid #E3E1D8', borderRadius:8, padding:'10px 12px', marginBottom:10 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <span style={{ fontSize:12, color:'#5b5b53' }}>Kod wyrobu (auto):</span>
+              <span style={{ fontSize:15, fontWeight:700, color:'#085041', fontFamily:'monospace' }}>{autoCode || '—'}</span>
+            </div>
+            {(!selUnit?.segment_code || (form.pallet_material_id && !selPallet?.segment_code)) &&
+              <div className="muted" style={{ fontSize:11, marginTop:4, color:'#BA7517' }}>Uzupełnij „kod segmentu" przy opakowaniu w Magazynie opakowań, aby kod był pełny.</div>}
+          </div>
+
+          <div style={{ marginBottom:10 }}>
+            <div className="flex" style={{ justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+              <label style={{ margin:0 }}>Dodatkowe materiały (folia, etykieta…)</label>
+              <button type="button" className="btn btn-sm" onClick={addItem}>+ Dodaj materiał</button>
+            </div>
+            {items.length===0 && <div className="muted" style={{ fontSize:12 }}>Brak dodatków. Worek i paleta liczą się automatycznie (1 na sztukę / 1 na paletę).</div>}
+            {items.map((it, i) => (
+              <div key={i} className="flex" style={{ gap:6, marginBottom:6, alignItems:'center' }}>
+                <select value={it.packaging_material_id} onChange={e => updItem(i,'packaging_material_id',e.target.value)} style={{ flex:2 }}>
+                  <option value="">— materiał —</option>
+                  {materials.map(m => <option key={m.id} value={m.id}>{matLabel(m)}</option>)}
+                </select>
+                <input type="number" step="0.001" value={it.qty_per} onChange={e => updItem(i,'qty_per',e.target.value)} style={{ width:80 }} placeholder="ilość" />
+                <select value={it.per} onChange={e => updItem(i,'per',e.target.value)} style={{ width:120 }}>
+                  <option value="sztuka">na sztukę</option>
+                  <option value="paleta">na paletę</option>
+                </select>
+                <button type="button" className="btn btn-sm btn-danger" onClick={() => rmItem(i)}>✕</button>
+              </div>
+            ))}
+          </div>
+
+          <div className="fr">
+            <div><label>Status</label>
+              <select value={form.status} onChange={e => f('status',e.target.value)}>
+                <option value="aktywny">Aktywny</option>
+                <option value="wycofany">Wycofany</option>
+              </select>
+            </div>
+            <div><label>Nazwa (opcjonalnie)</label><input value={form.name} onChange={e => f('name',e.target.value)} placeholder="domyślnie z receptury" /></div>
+          </div>
+          <div><label>Uwagi</label><input value={form.notes} onChange={e => f('notes',e.target.value)} placeholder="opcjonalne" /></div>
+
+          <div className="modal-footer">
+            <button className="btn" onClick={() => setModal(false)}>Anuluj</button>
+            <button className="btn btn-primary" onClick={save} disabled={saving}>{saving?'Zapisywanie...':editMode?'Zapisz zmiany':'Utwórz BOM'}</button>
+          </div>
+        </div>
+      </div>
+
+      {/* Usuń BOM */}
+      <div className={`modal-overlay ${confirmDelete?'open':''}`} onClick={e => e.target===e.currentTarget && setConfirmDelete(null)}>
+        <div className="modal" style={{ maxWidth:420 }}>
+          <div className="modal-title">Usuń BOM</div>
+          <div className="warn-box">Usunąć BOM <b>{confirmDelete?.code_ext}</b>? Usunie też jego pozycje materiałów.</div>
+          <div className="modal-footer">
+            <button className="btn" onClick={() => setConfirmDelete(null)}>Anuluj</button>
+            <button className="btn btn-danger" onClick={() => deleteBom(confirmDelete)}>Tak, usuń</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
