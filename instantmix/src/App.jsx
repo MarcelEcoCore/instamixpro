@@ -1,4 +1,4 @@
-import { useState, useEffect, createContext, useContext } from 'react'
+import { useState, useEffect, createContext, useContext, Component } from 'react'
 import { supabase } from './lib/supabase'
 import Login from './pages/Login'
 import Layout from './components/Layout'
@@ -52,6 +52,24 @@ function Placeholder({ title, dept }) {
   )
 }
 
+class ErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { err: null } }
+  static getDerivedStateFromError(err) { return { err } }
+  componentDidCatch(err, info) { console.error('Błąd zakładki:', err, info) }
+  render() {
+    if (this.state.err) {
+      return (
+        <div style={{ padding:40, maxWidth:800, margin:'0 auto' }}>
+          <div style={{ fontSize:18, fontWeight:600, color:'#A32D2D', marginBottom:8 }}>Błąd na tej zakładce</div>
+          <pre style={{ whiteSpace:'pre-wrap', fontSize:12, background:'#FCEBEB', border:'0.5px solid #F0B4B4', borderRadius:8, padding:12, color:'#791F1F' }}>{String(this.state.err && this.state.err.message || this.state.err)}</pre>
+          <div style={{ color:'#5F5E5A', fontSize:12, marginTop:8 }}>Pozostałe zakładki działają — przełącz się na inną i wróć.</div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 export default function App() {
   const [session, setSession] = useState(null)
   const [profile, setProfile] = useState(null)
@@ -92,9 +110,11 @@ export default function App() {
   return (
     <AuthContext.Provider value={{ session, profile }}>
       <Layout page={page} setPage={setPage}>
-        {PageComponent
-          ? <PageComponent />
-          : <Placeholder title={tabInfo?.label || 'Zakładka'} dept={tabInfo?.deptLabel || ''} />}
+        <ErrorBoundary key={page}>
+          {PageComponent
+            ? <PageComponent />
+            : <Placeholder title={tabInfo?.label || 'Zakładka'} dept={tabInfo?.deptLabel || ''} />}
+        </ErrorBoundary>
       </Layout>
     </AuthContext.Provider>
   )
