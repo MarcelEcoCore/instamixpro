@@ -13,16 +13,44 @@ import Magazyn from './pages/Magazyn'
 import Zlecenia from './pages/Zlecenia'
 import MagazynWG from './pages/MagazynWG'
 import Klienci from './pages/Klienci'
+import { ALL_TABS } from './lib/nav'
 import './index.css'
 
 export const AuthContext = createContext(null)
 export const useAuth = () => useContext(AuthContext)
 
+// Mapowanie id zakładki -> komponent. Brak w mapie => placeholder "w budowie".
+const COMPONENTS = {
+  zlecenia: Zlecenia,
+  klienci: Klienci,
+  magazyn: Magazyn,
+  skladniki: Skladniki,
+  receptury: Receptury,
+  partie: Partie,
+  kalkulator: Kalkulator,
+  produkcja: Produkcja,
+  magazynwg: MagazynWG,
+  dashboard: Dashboard,
+  eksport: Eksport,
+}
+
+function Placeholder({ title, dept }) {
+  return (
+    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'80px 20px', textAlign:'center', color:'#5F5E5A' }}>
+      <div style={{ fontSize:38, marginBottom:12 }}>🚧</div>
+      <div style={{ fontSize:18, fontWeight:600, color:'#1a1a18', marginBottom:6 }}>{title}</div>
+      <div style={{ fontSize:13, maxWidth:420 }}>
+        Dział: <b>{dept}</b>. Ta zakładka jest w budowie — dodamy ją w kolejnym etapie przebudowy.
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   const [session, setSession] = useState(null)
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [page, setPage] = useState('receptury')
+  const [page, setPage] = useState('zlecenia')
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -52,18 +80,15 @@ export default function App() {
 
   if (!session) return <Login />
 
-  const pages = {
-    receptury: Receptury, skladniki: Skladniki, partie: Partie,
-    zlecenia: Zlecenia, kalkulator: Kalkulator, magazynwg: MagazynWG,
-    produkcja: Produkcja, dashboard: Dashboard,
-    eksport: Eksport, magazyn: Magazyn, klienci: Klienci
-  }
-  const PageComponent = pages[page] || Produkcja
+  const tabInfo = ALL_TABS.find(t => t.id === page) || ALL_TABS[0]
+  const PageComponent = COMPONENTS[page]
 
   return (
     <AuthContext.Provider value={{ session, profile }}>
       <Layout page={page} setPage={setPage}>
-        <PageComponent />
+        {PageComponent
+          ? <PageComponent />
+          : <Placeholder title={tabInfo?.label || 'Zakładka'} dept={tabInfo?.deptLabel || ''} />}
       </Layout>
     </AuthContext.Provider>
   )
