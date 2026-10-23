@@ -14,6 +14,7 @@ import Zlecenia from './pages/Zlecenia'
 import MagazynWG from './pages/MagazynWG'
 import Klienci from './pages/Klienci'
 import Dostawcy from './pages/Dostawcy'
+import MagazynOpakowan from './pages/MagazynOpakowan'
 import { ALL_TABS } from './lib/nav'
 import './index.css'
 
@@ -24,6 +25,7 @@ export const useAuth = () => useContext(AuthContext)
 const COMPONENTS = {
   zlecenia: Zlecenia,
   dostawcy: Dostawcy,
+  magazyn_opakowan: MagazynOpakowan,
   klienci: Klienci,
   magazyn: Magazyn,
   skladniki: Skladniki,
