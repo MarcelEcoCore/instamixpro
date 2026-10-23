@@ -13,6 +13,7 @@ import Magazyn from './pages/Magazyn'
 import Zlecenia from './pages/Zlecenia'
 import MagazynWG from './pages/MagazynWG'
 import Klienci from './pages/Klienci'
+import Dostawcy from './pages/Dostawcy'
 import { ALL_TABS } from './lib/nav'
 import './index.css'
 
@@ -22,6 +23,7 @@ export const useAuth = () => useContext(AuthContext)
 // Mapowanie id zakładki -> komponent. Brak w mapie => placeholder "w budowie".
 const COMPONENTS = {
   zlecenia: Zlecenia,
+  dostawcy: Dostawcy,
   klienci: Klienci,
   magazyn: Magazyn,
   skladniki: Skladniki,
