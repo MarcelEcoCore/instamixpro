@@ -17,7 +17,7 @@ export const DEPARTMENTS = [
   { id: 'jakosc', label: 'Jakość', tabs: [
     { id: 'receptury',         label: 'Receptury' },
     { id: 'partie',            label: 'Przyjęcie dostawy' },
-    { id: 'bom',               label: 'BOM',                 wip: true },
+    { id: 'bom',               label: 'BOM' },
   ]},
   { id: 'produkcja', label: 'Produkcja', tabs: [
     { id: 'kalkulator',        label: 'Planowanie zleceń' },
