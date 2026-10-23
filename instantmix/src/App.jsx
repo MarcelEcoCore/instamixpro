@@ -15,7 +15,7 @@ import MagazynWG from './pages/MagazynWG'
 import Klienci from './pages/Klienci'
 import Dostawcy from './pages/Dostawcy'
 import MagazynOpakowan from './pages/MagazynOpakowan'
-import BOM from './pages/BOM'
+import Bom from './pages/Bom'
 import { ALL_TABS } from './lib/nav'
 import './index.css'
 
@@ -27,7 +27,7 @@ const COMPONENTS = {
   zlecenia: Zlecenia,
   dostawcy: Dostawcy,
   magazyn_opakowan: MagazynOpakowan,
-  bom: BOM,
+  bom: Bom,
   klienci: Klienci,
   magazyn: Magazyn,
   skladniki: Skladniki,
