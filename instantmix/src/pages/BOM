@@ -31,18 +31,21 @@ export default function BOM() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(null)
+  const [loadError, setLoadError] = useState('')
 
   useEffect(() => { load() }, [])
 
   async function load() {
     setLoading(true)
-    const [{ data: b }, { data: bi }, { data: c }, { data: r }, { data: m }] = await Promise.all([
-      supabase.from('bom').select('*, clients(number,name), recipes(code,name,version), unit:unit_material_id(code,name,segment_code), pallet:pallet_material_id(code,name,segment_code)').order('created_at', { ascending:false }),
+    const [{ data: b, error: be }, { data: bi }, { data: c, error: ce }, { data: r, error: re }, { data: m, error: me }] = await Promise.all([
+      supabase.from('bom').select('*, clients(number,name), recipes(code,name,version)').order('created_at', { ascending:false }),
       supabase.from('bom_items').select('*, packaging_materials(code,name,unit)'),
       supabase.from('clients').select('id,number,name').order('name'),
       supabase.from('recipes').select('id,code,name,version,client_id,status').neq('status','zarchiwizowana').order('code'),
       supabase.from('packaging_materials').select('id,code,name,type,unit,segment_code').eq('active',true).order('code'),
     ])
+    const errs = [be,ce,re,me].filter(Boolean).map(e=>e.message)
+    setLoadError(errs.length ? errs.join(' | ') : '')
     setBoms(b || [])
     setClients(c || [])
     setRecipes(r || [])
@@ -138,6 +141,7 @@ export default function BOM() {
   }
 
   const matLabel = m => `${m.code} — ${m.name}`
+  const matById = id => materials.find(m => m.id === id)
 
   return (
     <div>
@@ -148,6 +152,8 @@ export default function BOM() {
           {canEdit && <button className="btn btn-primary btn-sm" onClick={openNew}>+ Nowy BOM</button>}
         </div>
       </div>
+
+      {loadError && <div className="err-box" style={{ marginBottom:10 }}>Błąd ładowania danych: {loadError}</div>}
 
       <div className="flex" style={{ marginBottom:10, gap:6 }}>
         {[['aktywne','Aktywne'],['wycofane','Wycofane'],['wszystkie','Wszystkie']].map(([val,label]) => (
@@ -178,8 +184,8 @@ export default function BOM() {
                 <td><div style={{ fontWeight:500, fontSize:13 }}>{b.recipes?.name}</div><div className="muted" style={{ fontSize:11 }}>{b.recipes?.code} · {b.recipes?.version}</div></td>
                 <td style={{ textAlign:'right', fontWeight:500 }}>{fmtGram(b.gramatura_kg)} kg</td>
                 <td style={{ textAlign:'right' }}>{b.units_per_pallet||'—'}</td>
-                <td style={{ fontSize:12 }}>{b.unit ? `${b.unit.code}${b.unit.segment_code?' ('+b.unit.segment_code+')':''}` : '—'}</td>
-                <td style={{ fontSize:12 }}>{b.pallet ? `${b.pallet.code}${b.pallet.segment_code?' ('+b.pallet.segment_code+')':''}` : '—'}</td>
+                <td style={{ fontSize:12 }}>{(() => { const u = matById(b.unit_material_id); return u ? `${u.code}${u.segment_code?' ('+u.segment_code+')':''}` : '—' })()}</td>
+                <td style={{ fontSize:12 }}>{(() => { const pa = matById(b.pallet_material_id); return pa ? `${pa.code}${pa.segment_code?' ('+pa.segment_code+')':''}` : '—' })()}</td>
                 <td style={{ textAlign:'center' }}><span className="badge b-info">{(bomItems[b.id]||[]).length}</span></td>
                 <td>{b.status==='aktywny' ? <span className="badge b-ok">Aktywny</span> : <span className="badge b-gray">Wycofany</span>}</td>
                 <td><div className="flex" style={{ gap:4 }}>
