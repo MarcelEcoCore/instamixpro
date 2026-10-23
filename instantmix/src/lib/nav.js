@@ -11,7 +11,7 @@ export const DEPARTMENTS = [
     { id: 'dostawcy',          label: 'Dostawcy' },
     { id: 'zamowienia_zakupu', label: 'Zamówienia zakupu',   wip: true },
     { id: 'magazyn',           label: 'Magazyn surowców' },
-    { id: 'magazyn_opakowan',  label: 'Magazyn opakowań',    wip: true },
+    { id: 'magazyn_opakowan',  label: 'Magazyn opakowań' },
     { id: 'skladniki',         label: 'Składniki (słownik)' },
   ]},
   { id: 'jakosc', label: 'Jakość', tabs: [
