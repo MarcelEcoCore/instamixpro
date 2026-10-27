@@ -28,6 +28,8 @@ export default function Zlecenia() {
   const [orders, setOrders] = useState([])
   const [clients, setClients] = useState([])
   const [boms, setBoms] = useState([])
+  const [bomItemsMap, setBomItemsMap] = useState({})
+  const [pkgMats, setPkgMats] = useState([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState('aktywne')
@@ -53,14 +55,20 @@ export default function Zlecenia() {
 
   async function load() {
     setLoading(true)
-    const [{ data: o }, { data: c }, { data: b }] = await Promise.all([
+    const [{ data: o }, { data: c }, { data: b }, { data: bi }, { data: pm }] = await Promise.all([
       supabase.from('orders').select('*, bom(code_ext,gramatura_kg,units_per_pallet,recipes(code,name,version)), recipes(code,name,version)').order('ship_date', { ascending: true }),
       supabase.from('clients').select('id,number,name,status,is_sample').eq('status','aktywny').order('name'),
-      supabase.from('bom').select('id,client_id,code_ext,gramatura_kg,units_per_pallet,recipe_id,status,recipes(code,name,version)').eq('status','aktywny').order('code_ext'),
+      supabase.from('bom').select('id,client_id,code_ext,gramatura_kg,units_per_pallet,unit_material_id,pallet_material_id,recipe_id,status,recipes(code,name,version)').eq('status','aktywny').order('code_ext'),
+      supabase.from('bom_items').select('bom_id,qty_per,per,packaging_materials(code,name,unit)'),
+      supabase.from('packaging_materials').select('id,code,name,unit'),
     ])
     setOrders(o || [])
     setClients(c || [])
     setBoms(b || [])
+    const im = {}
+    ;(bi || []).forEach(x => { (im[x.bom_id] = im[x.bom_id] || []).push(x) })
+    setBomItemsMap(im)
+    setPkgMats(pm || [])
     setLoading(false)
     setLastUpdated(new Date())
   }
@@ -96,6 +104,21 @@ export default function Zlecenia() {
   const qty = parseFloat(form.qty_units) || 0
   const previewKg = selBom ? qty * parseFloat(selBom.gramatura_kg || 0) : 0
   const previewPallets = (selBom && selBom.units_per_pallet) ? Math.ceil(qty / parseInt(selBom.units_per_pallet)) : null
+  const matById = id => pkgMats.find(m => m.id === id)
+  function bomMaterials() {
+    if (!selBom || qty <= 0) return []
+    const rows = []
+    const u = matById(selBom.unit_material_id)
+    if (u) rows.push({ code:u.code, name:u.name, unit:u.unit, qty: qty, rola:'worek' })
+    const pal = matById(selBom.pallet_material_id)
+    if (pal && previewPallets) rows.push({ code:pal.code, name:pal.name, unit:pal.unit, qty: previewPallets, rola:'paleta' })
+    ;(bomItemsMap[selBom.id] || []).forEach(it => {
+      const m = it.packaging_materials
+      const q = it.per === 'paleta' ? (parseFloat(it.qty_per)||0) * (previewPallets||0) : (parseFloat(it.qty_per)||0) * qty
+      rows.push({ code:m?.code, name:m?.name, unit:m?.unit, qty:q, rola: it.per==='paleta'?'na paletę':'na sztukę' })
+    })
+    return rows
+  }
 
   const filtered = orders.filter(o => {
     const q = search.toLowerCase()
@@ -316,6 +339,25 @@ export default function Zlecenia() {
             </div>
             {selBom && <div className="muted" style={{ fontSize:11, marginTop:6 }}>Gramatura: {parseFloat(selBom.gramatura_kg)} kg/szt{selBom.units_per_pallet?` · ${selBom.units_per_pallet} szt./paletę`:''}</div>}
           </div>
+
+          {selBom && qty>0 && (
+            <div style={{ marginBottom:10 }}>
+              <div style={{ fontSize:12, fontWeight:600, color:'#085041', marginBottom:6 }}>Materiały opakowaniowe wg BOM</div>
+              <table style={{ width:'100%' }}>
+                <thead><tr><th>Materiał</th><th style={{ textAlign:'right', width:120 }}>Potrzeba</th><th style={{ width:90 }}>Reguła</th></tr></thead>
+                <tbody>
+                  {bomMaterials().map((r,i) => (
+                    <tr key={i}>
+                      <td style={{ fontSize:12 }}>{r.code ? r.code+' — ' : ''}{r.name||'—'}</td>
+                      <td style={{ textAlign:'right', fontWeight:500 }}>{parseFloat((r.qty||0).toFixed(3)).toLocaleString('pl-PL')} {r.unit||''}</td>
+                      <td className="muted" style={{ fontSize:11 }}>{r.rola}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="muted" style={{ fontSize:10, marginTop:4 }}>Podgląd planistyczny — faktyczne zejście opakowań nastąpi przy pakowaniu.</div>
+            </div>
+          )}
 
           <div><label>Uwagi *</label><input value={form.notes} onChange={e => f('notes',e.target.value)} placeholder="wymagane" /></div>
 
