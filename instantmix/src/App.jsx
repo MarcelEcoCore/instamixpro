@@ -4,7 +4,7 @@ import Login from './pages/Login'
 import Layout from './components/Layout'
 import Receptury from './pages/Receptury'
 import Skladniki from './pages/Skladniki'
-import Partie from './pages/Partie'
+import PrzyjecieDostawy from './pages/PrzyjecieDostawy'
 import Kalkulator from './pages/Kalkulator'
 import Produkcja from './pages/Produkcja'
 import Dashboard from './pages/Dashboard'
@@ -34,7 +34,7 @@ const COMPONENTS = {
   magazyn: Magazyn,
   skladniki: Skladniki,
   receptury: Receptury,
-  partie: Partie,
+  partie: PrzyjecieDostawy,
   kalkulator: Kalkulator,
   produkcja: Produkcja,
   magazynwg: MagazynWG,
