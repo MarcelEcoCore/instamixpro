@@ -24,13 +24,21 @@ export default function Klienci() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(null)
+  const [expandedId, setExpandedId] = useState(null)
+  const [bomMap, setBomMap] = useState({})
 
   useEffect(() => { load() }, [])
 
   async function load() {
     setLoading(true)
-    const { data } = await supabase.from('clients').select('*, recipes(id)').order('name')
+    const [{ data }, { data: boms }] = await Promise.all([
+      supabase.from('clients').select('*, recipes(id)').order('name'),
+      supabase.from('bom').select('id, client_id, code_ext, gramatura_kg, units_per_pallet, status, recipes(code,name,version)').order('code_ext'),
+    ])
     setClients(data || [])
+    const map = {}
+    ;(boms || []).forEach(b => { if (b.client_id) (map[b.client_id] = map[b.client_id] || []).push(b) })
+    setBomMap(map)
     setLoading(false)
   }
 
@@ -132,6 +140,9 @@ export default function Klienci() {
     archiwum: clients.filter(c => c.status === 'archiwum').length,
   }
 
+  function fmtG(g){ const n=parseFloat(g); if(isNaN(n)) return ''; return Number.isInteger(n)?String(n):String(n) }
+  function bomsForClient(id){ return bomMap[id]||[] }
+
   function fmtDate(d) {
     if (!d) return '—'
     return new Date(d).toLocaleDateString('pl-PL', { day:'2-digit', month:'2-digit', year:'numeric' })
@@ -165,6 +176,7 @@ export default function Klienci() {
       <div style={{ background:'#fff', border:'0.5px solid #D3D1C7', borderRadius:8, overflowX:'auto', overflowY:'auto', maxHeight:'calc(100vh - 300px)' }}>
         <table>
           <thead style={{ position:'sticky', top:0, zIndex:10, background:'#fff' }}><tr>
+            <th style={{ width:32 }}></th>
             <SortTh col="number" label="Nr klienta" width={110} />
             <SortTh col="name" label="Nazwa klienta" />
             <SortTh col="status" label="Status" width={110} />
@@ -175,9 +187,16 @@ export default function Klienci() {
             <th></th>
           </tr></thead>
           <tbody>
-            {loading && <tr><td colSpan={8} style={{ textAlign:'center', padding:24, color:'#888' }}>Ładowanie...</td></tr>}
-            {!loading && filtered.map(c => (
-              <tr key={c.id} style={{ opacity: c.status==='archiwum' ? 0.6 : 1 }}>
+            {loading && <tr><td colSpan={9} style={{ textAlign:'center', padding:24, color:'#888' }}>Ładowanie...</td></tr>}
+            {!loading && filtered.map(c => {
+              const boms = bomsForClient(c.id)
+              const isExp = expandedId === c.id
+              return (
+              <React.Fragment key={c.id}>
+              <tr style={{ opacity: c.status==='archiwum' ? 0.6 : 1 }}>
+                <td style={{ textAlign:'center' }}>
+                  <button onClick={() => setExpandedId(isExp?null:c.id)} title="Pokaż BOM-y" style={{ background:'none', border:'none', cursor:'pointer', fontSize:12, color:'#5F5E5A', padding:'2px 4px' }}>{isExp?'▲':'▼'}</button>
+                </td>
                 <td>
                   {c.is_sample
                     ? <span className="badge b-purple" style={{ fontSize:10 }}>Próbka</span>
@@ -213,8 +232,42 @@ export default function Klienci() {
                   </div>
                 </td>
               </tr>
-            ))}
-            {!loading && filtered.length===0 && <tr><td colSpan={8} style={{ textAlign:'center', padding:24, color:'#888' }}>Brak klientów</td></tr>}
+              {isExp && (
+                <tr>
+                  <td colSpan={9} style={{ padding:0, background:'#F9F8F5' }}>
+                    <div style={{ padding:'8px 16px 12px 40px' }}>
+                      <div style={{ fontSize:12, fontWeight:600, color:'#0F6E56', marginBottom:8 }}>Przypisane BOM-y — {c.name}</div>
+                      {boms.length===0 ? (
+                        <div className="muted" style={{ fontSize:12 }}>Brak BOM-ów. Dodaj je w zakładce Jakość → BOM.</div>
+                      ) : (
+                        <table style={{ width:'auto', minWidth:620 }}>
+                          <thead><tr>
+                            <th>Kod BOM</th><th>Receptura</th>
+                            <th style={{ textAlign:'right' }}>Gramatura</th>
+                            <th style={{ textAlign:'right' }}>Szt./pal.</th>
+                            <th>Status</th>
+                          </tr></thead>
+                          <tbody>
+                            {boms.map(b => (
+                              <tr key={b.id} style={{ opacity: b.status==='wycofany'?0.6:1 }}>
+                                <td><span className="lot">{b.code_ext||'—'}</span></td>
+                                <td style={{ fontSize:12 }}>{b.recipes ? `${b.recipes.code} — ${b.recipes.name} (${b.recipes.version})` : '—'}</td>
+                                <td style={{ textAlign:'right' }}>{fmtG(b.gramatura_kg)} kg</td>
+                                <td style={{ textAlign:'right' }}>{b.units_per_pallet||'—'}</td>
+                                <td>{b.status==='aktywny' ? <span className="badge b-ok" style={{ fontSize:10 }}>Aktywny</span> : <span className="badge b-gray" style={{ fontSize:10 }}>Wycofany</span>}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </React.Fragment>
+              )
+            })}
+            {!loading && filtered.length===0 && <tr><td colSpan={9} style={{ textAlign:'center', padding:24, color:'#888' }}>Brak klientów</td></tr>}
           </tbody>
         </table>
       </div>
