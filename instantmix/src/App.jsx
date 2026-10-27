@@ -7,6 +7,7 @@ import Skladniki from './pages/Skladniki'
 import PrzyjecieDostawy from './pages/PrzyjecieDostawy'
 import Kalkulator from './pages/Kalkulator'
 import Produkcja from './pages/Produkcja'
+import Pakowanie from './pages/Pakowanie'
 import Dashboard from './pages/Dashboard'
 import Eksport from './pages/Eksport'
 import Magazyn from './pages/Magazyn'
@@ -37,6 +38,7 @@ const COMPONENTS = {
   partie: PrzyjecieDostawy,
   kalkulator: Kalkulator,
   produkcja: Produkcja,
+  pakowanie: Pakowanie,
   magazynwg: MagazynWG,
   dashboard: Dashboard,
   eksport: Eksport,
