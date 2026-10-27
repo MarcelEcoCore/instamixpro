@@ -13,6 +13,12 @@ export default function Produkcja() {
   const [items, setItems] = useState({})   // order_id -> [consumed lots]
   const [busy, setBusy] = useState(null)
 
+  // modal "Wyprodukowane" — rejestracja luzu do Magazynu WG
+  const [doneModal, setDoneModal] = useState(false)
+  const [doneOrder, setDoneOrder] = useState(null)
+  const [doneForm, setDoneForm] = useState({ quantity_kg:'', bag_count:'1', location:'', notes:'' })
+  const [error, setError] = useState('')
+
   useEffect(() => { load() }, [])
 
   async function load() {
@@ -42,10 +48,33 @@ export default function Produkcja() {
     }
   }
 
-  async function markDone(o) {
-    setBusy(o.id)
+  function openDone(o) {
+    setDoneOrder(o)
+    setDoneForm({ quantity_kg: o.production_batches?.quantity_kg ?? '', bag_count:'1', location:'', notes:'' })
+    setError(''); setDoneModal(true)
+  }
+  const df = (k,v) => setDoneForm(p => ({ ...p, [k]:v }))
+
+  async function confirmDone() {
+    const o = doneOrder
+    const qty = parseFloat(doneForm.quantity_kg)
+    if (!qty || qty <= 0) { setError('Podaj masę wyrobu (luz)'); return }
+    if (!o.production_batch_id) { setError('Brak partii produkcyjnej dla tego zlecenia.'); return }
+    setBusy(o.id); setError('')
+    // utwórz wyrób luz (opcjonalny podział na big bagi)
+    const n = Math.max(1, parseInt(doneForm.bag_count) || 1)
+    const base = Math.floor((qty / n) * 1000) / 1000
+    const today = new Date().toISOString().slice(0,10)
+    const rows = []; let acc = 0
+    for (let i=0; i<n; i++) {
+      const w = i===n-1 ? parseFloat((qty-acc).toFixed(3)) : base
+      acc = parseFloat((acc+base).toFixed(3))
+      rows.push({ production_batch_id:o.production_batch_id, order_id:o.id, received_date:today, quantity_kg:w, location:doneForm.location||null, notes:doneForm.notes||null, form:'luz', unit_type:'big_bag', unit_count:1, unit_weight_kg:w, created_by:profile?.id })
+    }
+    const { error: err } = await supabase.from('finished_goods').insert(rows)
+    if (err) { setError(err.message); setBusy(null); return }
     await supabase.from('orders').update({ status:'wyprodukowane', produced_at:new Date().toISOString(), updated_at:new Date().toISOString() }).eq('id', o.id)
-    setBusy(null); load()
+    setBusy(null); setDoneModal(false); load()
   }
   async function revert(o) {
     setBusy(o.id)
@@ -78,7 +107,7 @@ export default function Produkcja() {
                   <td style={{textAlign:'right',fontWeight:600}}>{fmt(o.production_batches?.quantity_kg)} kg</td>
                   <td style={{fontSize:12}}>{o.production_batches?.operator||'—'}</td>
                   <td className="muted" style={{fontSize:11}}>{o.production_batches?.created_at ? o.production_batches.created_at.slice(0,10) : '—'}</td>
-                  <td>{canEdit && <button className="btn btn-sm btn-primary" onClick={() => markDone(o)} disabled={busy===o.id}>{busy===o.id?'...':'Wyprodukowane ✓'}</button>}</td>
+                  <td>{canEdit && <button className="btn btn-sm btn-primary" onClick={() => openDone(o)} disabled={busy===o.id}>{busy===o.id?'...':'Wyprodukowane ✓'}</button>}</td>
                 </tr>
                 {expanded===o.id && (
                   <tr><td colSpan={9} style={{padding:0,background:'#F9F8F5'}}>
@@ -123,6 +152,28 @@ export default function Produkcja() {
             ))}
           </tbody>
         </table>
+      </div>
+
+      {/* Modal: rejestracja luzu przy wyprodukowaniu */}
+      <div className={`modal-overlay ${doneModal?'open':''}`} onClick={e => e.target===e.currentTarget && setDoneModal(false)}>
+        <div className="modal" style={{ maxWidth:520 }}>
+          <div className="modal-title">Wyprodukowano — {doneOrder?.order_number||''}</div>
+          {doneOrder && <div style={{ background:'#F1EFE8', borderRadius:8, padding:10, marginBottom:10, fontSize:13 }}>
+            Partia <b>{doneOrder.production_batches?.lot_number}</b> · masa wsadu {fmt(doneOrder.production_batches?.quantity_kg)} kg<br/>
+            <span className="muted" style={{fontSize:11}}>Podaj rzeczywistą masę wyrobu (luz) wchodzącą na Magazyn WG — możesz skorygować o wydajność/ubytki.</span>
+          </div>}
+          {error && <div className="err-box">{error}</div>}
+          <div className="fr">
+            <div><label>Masa wyrobu (luz) kg</label><input type="number" step="0.001" value={doneForm.quantity_kg} onChange={e => df('quantity_kg',e.target.value)} /></div>
+            <div><label>Liczba big bagów</label><input type="number" min="1" step="1" value={doneForm.bag_count} onChange={e => df('bag_count',e.target.value)} /></div>
+            <div><label>Lokalizacja</label><input value={doneForm.location} onChange={e => df('location',e.target.value)} placeholder="np. Hala WG" /></div>
+          </div>
+          <div><label>Uwagi</label><input value={doneForm.notes} onChange={e => df('notes',e.target.value)} placeholder="opcjonalne" /></div>
+          <div className="modal-footer">
+            <button className="btn" onClick={() => setDoneModal(false)}>Anuluj</button>
+            <button className="btn btn-primary" onClick={confirmDone} disabled={busy===doneOrder?.id}>{busy===doneOrder?.id?'Zapisywanie...':'Zatwierdź i utwórz luz'}</button>
+          </div>
+        </div>
       </div>
     </div>
   )
