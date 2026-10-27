@@ -16,6 +16,7 @@ import Klienci from './pages/Klienci'
 import Dostawcy from './pages/Dostawcy'
 import MagazynOpakowan from './pages/MagazynOpakowan'
 import Bom from './pages/Bom'
+import ZamowieniaZakupu from './pages/ZamowieniaZakupu'
 import { ALL_TABS } from './lib/nav'
 import './index.css'
 
@@ -28,6 +29,7 @@ const COMPONENTS = {
   dostawcy: Dostawcy,
   magazyn_opakowan: MagazynOpakowan,
   bom: Bom,
+  zamowienia_zakupu: ZamowieniaZakupu,
   klienci: Klienci,
   magazyn: Magazyn,
   skladniki: Skladniki,
