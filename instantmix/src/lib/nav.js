@@ -1,180 +1,47 @@
-import React, { useState, useEffect } from 'react'
-import { supabase } from '../lib/supabase'
-import { useAuth } from '../App'
+// Struktura nawigacji działowej (dwupoziomowa: dział -> podzakładki)
+// Jedno źródło prawdy dla App.jsx (routing) i Layout.jsx (menu).
+// wip:true  => zakładka jeszcze nie zbudowana, pokazuje placeholder "w budowie".
 
-export default function Produkcja() {
-  const { profile } = useAuth()
-  const canEdit = true // dostępy później
+export const DEPARTMENTS = [
+  { id: 'sprzedaz', label: 'Sprzedaż', tabs: [
+    { id: 'zlecenia',          label: 'Zamówienia sprzedaży' },
+    { id: 'klienci',           label: 'Klienci' },
+  ]},
+  { id: 'zakupy', label: 'Zakupy', tabs: [
+    { id: 'dostawcy',          label: 'Dostawcy' },
+    { id: 'zamowienia_zakupu', label: 'Zamówienia zakupu' },
+    { id: 'magazyn',           label: 'Magazyn surowców' },
+    { id: 'magazyn_opakowan',  label: 'Magazyn opakowań' },
+    { id: 'skladniki',         label: 'Składniki (słownik)' },
+  ]},
+  { id: 'jakosc', label: 'Jakość', tabs: [
+    { id: 'receptury',         label: 'Receptury' },
+    { id: 'partie',            label: 'Przyjęcie dostawy' },
+    { id: 'bom',               label: 'BOM' },
+  ]},
+  { id: 'produkcja', label: 'Produkcja', tabs: [
+    { id: 'kalkulator',        label: 'Planowanie zleceń' },
+    { id: 'produkcja',         label: 'Produkcja' },
+    { id: 'pakowanie',         label: 'Pakowanie' },
+    { id: 'magazynwg',         label: 'Magazyn WG' },
+    { id: 'inwentura',         label: 'Inwentura',           wip: true },
+  ]},
+  { id: 'pulpit', label: 'Pulpit', tabs: [
+    { id: 'dashboard',         label: 'Dashboard' },
+    { id: 'eksport',           label: 'Eksport / kopia' },
+  ]},
+]
 
-  const [running, setRunning] = useState([])
-  const [done, setDone] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [expanded, setExpanded] = useState(null)
-  const [items, setItems] = useState({})   // order_id -> [consumed lots]
-  const [busy, setBusy] = useState(null)
+// Wszystkie zakładki spłaszczone (pomocniczo)
+export const ALL_TABS = DEPARTMENTS.flatMap(d => d.tabs.map(t => ({ ...t, dept: d.id, deptLabel: d.label })))
 
-  // modal "Wyprodukowane" — rejestracja luzu do Magazynu WG
-  const [doneModal, setDoneModal] = useState(false)
-  const [doneOrder, setDoneOrder] = useState(null)
-  const [doneForm, setDoneForm] = useState({ quantity_kg:'', bag_count:'1', location:'', notes:'' })
-  const [error, setError] = useState('')
+// Dział zawierający daną zakładkę
+export function deptOfTab(tabId) {
+  return DEPARTMENTS.find(d => d.tabs.some(t => t.id === tabId)) || DEPARTMENTS[0]
+}
 
-  useEffect(() => { load() }, [])
-
-  async function load() {
-    setLoading(true)
-    const sel = '*, clients(number,name), bom(code_ext), recipes(code,name,version), production_batches(lot_number,quantity_kg,operator,foreman,created_at)'
-    const [{ data: r }, { data: d }] = await Promise.all([
-      supabase.from('orders').select(sel).eq('status','w_produkcji').order('planned_date',{ascending:true}),
-      supabase.from('orders').select(sel).eq('status','wyprodukowane').order('produced_at',{ascending:false}).limit(20),
-    ])
-    setRunning(r || []); setDone(d || [])
-    setLoading(false)
-  }
-
-  const klient = o => o.clients ? `${o.clients.number||''} ${o.clients.name||''}`.trim() : '—'
-  const wyrob = o => o.bom?.code_ext || o.recipes?.code || '—'
-  const fmt = v => parseFloat(v||0).toLocaleString('pl-PL')
-
-  async function toggleItems(o) {
-    if (expanded === o.id) { setExpanded(null); return }
-    setExpanded(o.id)
-    if (!items[o.id] && o.production_batch_id) {
-      const { data } = await supabase.from('production_batch_items')
-        .select('quantity_used_kg, fifo_order, ingredients(code,name), ingredient_batches(delivery_lot)')
-        .eq('production_batch_id', o.production_batch_id)
-        .order('fifo_order',{ascending:true})
-      setItems(p => ({ ...p, [o.id]: data || [] }))
-    }
-  }
-
-  function openDone(o) {
-    setDoneOrder(o)
-    setDoneForm({ quantity_kg: o.production_batches?.quantity_kg ?? '', bag_count:'1', location:'', notes:'' })
-    setError(''); setDoneModal(true)
-  }
-  const df = (k,v) => setDoneForm(p => ({ ...p, [k]:v }))
-
-  async function confirmDone() {
-    const o = doneOrder
-    const qty = parseFloat(doneForm.quantity_kg)
-    if (!qty || qty <= 0) { setError('Podaj masę wyrobu (luz)'); return }
-    if (!o.production_batch_id) { setError('Brak partii produkcyjnej dla tego zlecenia.'); return }
-    setBusy(o.id); setError('')
-    // utwórz wyrób luz (opcjonalny podział na big bagi)
-    const n = Math.max(1, parseInt(doneForm.bag_count) || 1)
-    const base = Math.floor((qty / n) * 1000) / 1000
-    const today = new Date().toISOString().slice(0,10)
-    const rows = []; let acc = 0
-    for (let i=0; i<n; i++) {
-      const w = i===n-1 ? parseFloat((qty-acc).toFixed(3)) : base
-      acc = parseFloat((acc+base).toFixed(3))
-      rows.push({ production_batch_id:o.production_batch_id, order_id:o.id, received_date:today, quantity_kg:w, location:doneForm.location||null, notes:doneForm.notes||null, form:'luz', unit_type:'big_bag', unit_count:1, unit_weight_kg:w, created_by:profile?.id })
-    }
-    const { error: err } = await supabase.from('finished_goods').insert(rows)
-    if (err) { setError(err.message); setBusy(null); return }
-    await supabase.from('orders').update({ status:'wyprodukowane', produced_at:new Date().toISOString(), updated_at:new Date().toISOString() }).eq('id', o.id)
-    setBusy(null); setDoneModal(false); load()
-  }
-  async function revert(o) {
-    setBusy(o.id)
-    await supabase.from('orders').update({ status:'w_produkcji', produced_at:null, updated_at:new Date().toISOString() }).eq('id', o.id)
-    setBusy(null); load()
-  }
-
-  return (
-    <div>
-      <div className="page-header">
-        <div><div className="page-title">Produkcja</div><div className="page-sub">Zlecenia w toku — oznacz jako wyprodukowane po zmieszaniu</div></div>
-        <button className="btn btn-sm" onClick={load}>↻</button>
-      </div>
-
-      <div style={{ fontSize:13, fontWeight:600, color:'#0F6E56', margin:'4px 0 8px' }}>W produkcji ({running.length})</div>
-      <div style={{ background:'#fff', border:'0.5px solid #D3D1C7', borderRadius:8, overflowX:'auto', marginBottom:18 }}>
-        <table style={{ minWidth:900 }}>
-          <thead><tr><th style={{width:32}}></th><th>Nr zlecenia</th><th>Klient</th><th>Wyrób</th><th>Nr partii</th><th style={{textAlign:'right'}}>Masa</th><th>Operator</th><th>Start</th><th></th></tr></thead>
-          <tbody>
-            {loading && <tr><td colSpan={9} style={{textAlign:'center',padding:24,color:'#888'}}>Ładowanie...</td></tr>}
-            {!loading && running.length===0 && <tr><td colSpan={9} style={{textAlign:'center',padding:24,color:'#888'}}>Brak zleceń w produkcji</td></tr>}
-            {!loading && running.map(o => (
-              <React.Fragment key={o.id}>
-                <tr>
-                  <td style={{textAlign:'center'}}><button onClick={() => toggleItems(o)} style={{background:'none',border:'none',cursor:'pointer',fontSize:12,color:'#5F5E5A'}}>{expanded===o.id?'▲':'▼'}</button></td>
-                  <td><span className="lot">{o.order_number||'—'}</span></td>
-                  <td style={{fontSize:12}}>{klient(o)}</td>
-                  <td style={{fontWeight:500,fontSize:12}}>{wyrob(o)}</td>
-                  <td><span className="lot" style={{fontSize:11}}>{o.production_batches?.lot_number||'—'}</span></td>
-                  <td style={{textAlign:'right',fontWeight:600}}>{fmt(o.production_batches?.quantity_kg)} kg</td>
-                  <td style={{fontSize:12}}>{o.production_batches?.operator||'—'}</td>
-                  <td className="muted" style={{fontSize:11}}>{o.production_batches?.created_at ? o.production_batches.created_at.slice(0,10) : '—'}</td>
-                  <td>{canEdit && <button className="btn btn-sm btn-primary" onClick={() => openDone(o)} disabled={busy===o.id}>{busy===o.id?'...':'Wyprodukowane ✓'}</button>}</td>
-                </tr>
-                {expanded===o.id && (
-                  <tr><td colSpan={9} style={{padding:0,background:'#F9F8F5'}}>
-                    <div style={{padding:'8px 16px 12px 40px'}}>
-                      <div style={{fontSize:12,fontWeight:500,color:'#0F6E56',marginBottom:8}}>Zużyte partie surowców (FIFO)</div>
-                      {!items[o.id] ? <div className="muted" style={{fontSize:12}}>Ładowanie...</div> :
-                        items[o.id].length===0 ? <div className="muted" style={{fontSize:12}}>Brak pozycji</div> : (
-                        <table style={{width:'auto',minWidth:480}}>
-                          <thead><tr><th>Składnik</th><th>Partia dostawy</th><th style={{textAlign:'right'}}>Zużyto</th></tr></thead>
-                          <tbody>{items[o.id].map((it,i) => (
-                            <tr key={i}><td style={{fontSize:12}}>{it.ingredients?.code} — {it.ingredients?.name}</td>
-                            <td><span className="lot" style={{fontSize:11}}>{it.ingredient_batches?.delivery_lot||'—'}</span></td>
-                            <td style={{textAlign:'right',fontWeight:500}}>{parseFloat(it.quantity_used_kg||0).toFixed(3)} kg</td></tr>
-                          ))}</tbody>
-                        </table>
-                      )}
-                    </div>
-                  </td></tr>
-                )}
-              </React.Fragment>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div style={{ fontSize:13, fontWeight:600, color:'#5F5E5A', margin:'4px 0 8px' }}>Wyprodukowane — ostatnie ({done.length})</div>
-      <div style={{ background:'#fff', border:'0.5px solid #D3D1C7', borderRadius:8, overflowX:'auto' }}>
-        <table style={{ minWidth:760 }}>
-          <thead><tr><th>Nr zlecenia</th><th>Klient</th><th>Wyrób</th><th>Nr partii</th><th style={{textAlign:'right'}}>Masa</th><th>Data</th><th></th></tr></thead>
-          <tbody>
-            {done.length===0 && <tr><td colSpan={7} style={{textAlign:'center',padding:20,color:'#888'}}>Brak</td></tr>}
-            {done.map(o => (
-              <tr key={o.id}>
-                <td><span className="lot">{o.order_number||'—'}</span></td>
-                <td style={{fontSize:12}}>{klient(o)}</td>
-                <td style={{fontWeight:500,fontSize:12}}>{wyrob(o)}</td>
-                <td><span className="lot" style={{fontSize:11}}>{o.production_batches?.lot_number||'—'}</span></td>
-                <td style={{textAlign:'right'}}>{fmt(o.production_batches?.quantity_kg)} kg</td>
-                <td className="muted" style={{fontSize:11}}>{o.produced_at ? o.produced_at.slice(0,10) : '—'}</td>
-                <td>{canEdit && <button className="btn btn-sm" onClick={() => revert(o)} disabled={busy===o.id}>Cofnij</button>}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Modal: rejestracja luzu przy wyprodukowaniu */}
-      <div className={`modal-overlay ${doneModal?'open':''}`} onClick={e => e.target===e.currentTarget && setDoneModal(false)}>
-        <div className="modal" style={{ maxWidth:520 }}>
-          <div className="modal-title">Wyprodukowano — {doneOrder?.order_number||''}</div>
-          {doneOrder && <div style={{ background:'#F1EFE8', borderRadius:8, padding:10, marginBottom:10, fontSize:13 }}>
-            Partia <b>{doneOrder.production_batches?.lot_number}</b> · masa wsadu {fmt(doneOrder.production_batches?.quantity_kg)} kg<br/>
-            <span className="muted" style={{fontSize:11}}>Podaj rzeczywistą masę wyrobu (luz) wchodzącą na Magazyn WG — możesz skorygować o wydajność/ubytki.</span>
-          </div>}
-          {error && <div className="err-box">{error}</div>}
-          <div className="fr">
-            <div><label>Masa wyrobu (luz) kg</label><input type="number" step="0.001" value={doneForm.quantity_kg} onChange={e => df('quantity_kg',e.target.value)} /></div>
-            <div><label>Liczba big bagów</label><input type="number" min="1" step="1" value={doneForm.bag_count} onChange={e => df('bag_count',e.target.value)} /></div>
-            <div><label>Lokalizacja</label><input value={doneForm.location} onChange={e => df('location',e.target.value)} placeholder="np. Hala WG" /></div>
-          </div>
-          <div><label>Uwagi</label><input value={doneForm.notes} onChange={e => df('notes',e.target.value)} placeholder="opcjonalne" /></div>
-          <div className="modal-footer">
-            <button className="btn" onClick={() => setDoneModal(false)}>Anuluj</button>
-            <button className="btn btn-primary" onClick={confirmDone} disabled={busy===doneOrder?.id}>{busy===doneOrder?.id?'Zapisywanie...':'Zatwierdź i utwórz luz'}</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
+// Pierwsza niepusta zakładka działu
+export function firstTabOf(deptId) {
+  const d = DEPARTMENTS.find(x => x.id === deptId)
+  return d ? d.tabs[0].id : DEPARTMENTS[0].tabs[0].id
 }
