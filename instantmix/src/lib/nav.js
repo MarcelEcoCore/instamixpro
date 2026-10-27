@@ -9,7 +9,7 @@ export const DEPARTMENTS = [
   ]},
   { id: 'zakupy', label: 'Zakupy', tabs: [
     { id: 'dostawcy',          label: 'Dostawcy' },
-    { id: 'zamowienia_zakupu', label: 'Zamówienia zakupu',   wip: true },
+    { id: 'zamowienia_zakupu', label: 'Zamówienia zakupu' },
     { id: 'magazyn',           label: 'Magazyn surowców' },
     { id: 'magazyn_opakowan',  label: 'Magazyn opakowań' },
     { id: 'skladniki',         label: 'Składniki (słownik)' },
