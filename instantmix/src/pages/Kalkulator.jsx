@@ -2,746 +2,318 @@ import React, { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../App'
 
+const STATUS = { nowe:'Nowe', zaplanowane:'Zaplanowane', w_produkcji:'W produkcji' }
+
 export default function Kalkulator() {
   const { profile } = useAuth()
-  const canEdit = ['admin', 'technolog'].includes(profile?.role)
+  const canEdit = true // dostępy później
 
-  const [recipes, setRecipes] = useState([])
-  const [clients, setClients] = useState([])
-  const [selectedClient, setSelectedClient] = useState('')
-  const [selectedRecipe, setSelectedRecipe] = useState(null)
-  const [mass, setMass] = useState(250)
-  const [fifoResult, setFifoResult] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [modal, setModal] = useState(false)
-  const [prodForm, setProdForm] = useState({ operator: '', foreman: '', notes: '', order_id: '' })
-  const [saving, setSaving] = useState(false)
   const [orders, setOrders] = useState([])
-  const [ordersLoading, setOrdersLoading] = useState(true)
+  const [recipesMap, setRecipesMap] = useState({})
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
-  // ── Tryb PAKOWANIE ──────────────────────────────────────────
-  const canPack = ['admin','technolog','brygadzista'].includes(profile?.role)
-  const [mode, setMode] = useState('produkcja')
-  const [packOrders, setPackOrders] = useState([])
-  const [packSel, setPackSel] = useState(null)
-  const [packLuz, setPackLuz] = useState([])
-  const [packLuzGroups, setPackLuzGroups] = useState([])
-  const [packAssignOrder, setPackAssignOrder] = useState('')
-  const [packAssignList, setPackAssignList] = useState([])
-  const [packDone, setPackDone] = useState(0)
-  const [packForm, setPackForm] = useState({ unit_type:'worek', pallets:'', bags_per_pallet:'', unit_weight_kg:'', location:'', notes:'' })
-  const [packSaving, setPackSaving] = useState(false)
-  const [packError, setPackError] = useState('')
-  const [packMsg, setPackMsg] = useState('')
+  // planowanie
+  const [planModal, setPlanModal] = useState(false)
+  const [planOrder, setPlanOrder] = useState(null)
+  const [planForm, setPlanForm] = useState({ planned_date:'', production_priority:'', planning_notes:'' })
 
-  useEffect(() => { loadOrders(); loadClients() }, [])
+  // uruchomienie produkcji
+  const [runModal, setRunModal] = useState(false)
+  const [runOrder, setRunOrder] = useState(null)
+  const [runRecipe, setRunRecipe] = useState(null)
+  const [runMass, setRunMass] = useState(0)
+  const [fifo, setFifo] = useState([])
+  const [runForm, setRunForm] = useState({ operator:'', foreman:'', notes:'' })
+  const [saving, setSaving] = useState(false)
 
-  async function loadClients() {
-    const { data } = await supabase.from('clients').select('id,number,name').order('number')
-    setClients(data || [])
-  }
+  useEffect(() => { loadAll() }, [])
 
-  async function loadOrders() {
-    setOrdersLoading(true)
-    const { data } = await supabase
-      .from('orders')
-      .select('*, recipes(code, name, version, client)')
-      .in('status', ['nowe', 'w_realizacji'])
-      .order('ship_date', { ascending: true })
-    setOrders(data || [])
-    setOrdersLoading(false)
-  }
-
-  useEffect(() => {
-    supabase.from('recipes')
-      .select('*, recipe_items(*, ingredients(*))')
-      .eq('status', 'dopuszczona')
-      .order('client,code')
-      .then(({ data }) => setRecipes(data || []))
-  }, [])
-
-  const filteredRecipes = selectedClient
-    ? recipes.filter(r => r.client_id === selectedClient)
-    : recipes
-
-  async function calculate() {
-    if (!selectedRecipe || !mass) return
-    setLoading(true)
-
-    const { data: allUsed } = await supabase
-      .from('production_batch_items')
-      .select('ingredient_batch_id, quantity_used_kg')
-    const usedMap = {}
-    for (const u of (allUsed||[])) {
-      usedMap[u.ingredient_batch_id] = (usedMap[u.ingredient_batch_id]||0) + parseFloat(u.quantity_used_kg)
-    }
-
-    const { data: stockAll } = await supabase
-      .from('v_stock')
-      .select('*')
-      .eq('status', 'dopuszczona')
-      .order('received_date', { ascending: true })
-      .order('expiry_date', { ascending: true, nullsFirst: false })
-
-    const availableMap = {}
-    for (const s of (stockAll||[])) {
-      const used = usedMap[s.id]||0
-      const avail = parseFloat(s.current_kg) - used
-      if (avail > 0.001) {
-        if (!availableMap[s.ingredient_id]) availableMap[s.ingredient_id] = []
-        availableMap[s.ingredient_id].push({
-          id: s.id, delivery_lot: s.delivery_lot, current_kg: s.current_kg,
-          available: parseFloat(avail.toFixed(3)), received_date: s.received_date
-        })
-      }
-    }
-
-    const result = []
-    for (const item of selectedRecipe.recipe_items.sort((a, b) => a.sort_order - b.sort_order)) {
-      const needed = parseFloat(((mass * item.percentage) / 100).toFixed(3))
-      const rows = availableMap[item.ingredient_id] || []
-      let remaining = needed
-      const lots = []
-      for (const row of rows) {
-        if (remaining <= 0.001) break
-        const take = Math.min(remaining, row.available)
-        if (take > 0.001) {
-          lots.push({ lot: row.delivery_lot, batch_id: row.id, ingredient_batch_id: row.id, kg: parseFloat(take.toFixed(3)), available: row.available })
-          remaining = parseFloat((remaining - take).toFixed(3))
-        }
-      }
-      result.push({ ...item, needed, lots, shortage: remaining > 0.001 ? remaining : 0, ingredient: item.ingredients })
-    }
-    setFifoResult(result)
+  async function loadAll() {
+    setLoading(true); setError('')
+    const [{ data: ords, error: oerr }, { data: recs }] = await Promise.all([
+      supabase.from('orders')
+        .select('*, clients(number,name), bom(code_ext,recipe_id,gramatura_kg,units_per_pallet), recipes(code,name,version)')
+        .in('status', ['nowe','zaplanowane'])
+        .order('production_priority', { ascending:true, nullsFirst:false })
+        .order('ship_date', { ascending:true }),
+      supabase.from('recipes').select('*, recipe_items(*, ingredients(*))').eq('status','dopuszczona'),
+    ])
+    if (oerr) setError(oerr.message)
+    const rm = {}; (recs||[]).forEach(r => { rm[r.id] = r })
+    setRecipesMap(rm)
+    setOrders(ords || [])
     setLoading(false)
   }
 
-  useEffect(() => { if (selectedRecipe && mass) calculate() }, [selectedRecipe, mass])
-
-  const allergens = [...new Set(fifoResult.filter(r => r.ingredient?.has_allergen).map(r => r.ingredient.allergen_type))]
-  const hasShortage = fifoResult.some(r => r.shortage > 0)
-
-  async function generateLotNumber() {
-    const year = new Date().getFullYear()
-    // Pobierz MAX numer z istniejących partii — nie count(), tylko max lot_number
-    const { data } = await supabase
-      .from('production_batches')
-      .select('lot_number')
-      .like('lot_number', `PROD-${year}-%`)
-      .order('lot_number', { ascending: false })
-      .limit(1)
-    let nextNum = 1
-    if (data && data.length > 0) {
-      const lastLot = data[0].lot_number // np. "PROD-2026-0042"
-      const parts = lastLot.split('-')
-      const lastNum = parseInt(parts[2] || '0', 10)
-      nextNum = lastNum + 1
-    }
-    return `PROD-${year}-${String(nextNum).padStart(4, '0')}`
+  const massOf = o => {
+    if (o.quantity_kg != null && parseFloat(o.quantity_kg) > 0) return parseFloat(o.quantity_kg)
+    const g = parseFloat(o.bom?.gramatura_kg || 0), u = parseFloat(o.qty_units || 0)
+    return parseFloat((g*u).toFixed(3))
   }
+  const wyrob = o => o.bom?.code_ext || o.recipes?.code || '—'
+  const klient = o => o.clients ? `${o.clients.number||''} ${o.clients.name||''}`.trim() : '—'
 
-  async function createProductionBatch() {
-    setSaving(true)
-    const lotNumber = await generateLotNumber()
-    const { data: pb, error } = await supabase.from('production_batches').insert({
-      lot_number: lotNumber,
-      recipe_id: selectedRecipe.id,
-      quantity_kg: mass,
-      operator: prodForm.operator,
-      foreman: prodForm.foreman,
-      notes: prodForm.notes,
-      technologist: profile?.full_name,
-      client: selectedRecipe.client || null,
-      created_by: profile?.id
-    }).select().single()
-    if (!error) {
-      const items = fifoResult.flatMap((r) =>
-        r.lots.map((l, li) => ({
-          production_batch_id: pb.id,
-          ingredient_batch_id: l.ingredient_batch_id,
-          ingredient_id: r.ingredient_id,
-          quantity_used_kg: l.kg,
-          fifo_order: li + 1
-        }))
-      )
-      await supabase.from('production_batch_items').insert(items)
-      if (prodForm.order_id) {
-        await supabase.from('orders').update({
-          status: 'w_realizacji',
-          production_batch_id: pb.id,
-          updated_at: new Date().toISOString()
-        }).eq('id', prodForm.order_id)
-      }
-    }
+  const nowe = orders.filter(o => o.status === 'nowe')
+  const kolejka = orders.filter(o => o.status === 'zaplanowane')
+
+  // ── Planowanie ──
+  function openPlan(o) {
+    const nextPrio = (kolejka.reduce((m,x) => Math.max(m, parseInt(x.production_priority||0,10)), 0)) + 1
+    setPlanOrder(o)
+    setPlanForm({ planned_date: o.planned_date || new Date().toISOString().slice(0,10), production_priority: o.production_priority || nextPrio, planning_notes: o.planning_notes || '' })
+    setError(''); setPlanModal(true)
+  }
+  async function savePlan() {
+    setSaving(true); setError('')
+    const { error: err } = await supabase.from('orders').update({
+      status: 'zaplanowane',
+      planned_date: planForm.planned_date || null,
+      production_priority: planForm.production_priority==='' ? null : parseInt(planForm.production_priority,10),
+      planning_notes: planForm.planning_notes || null,
+      updated_at: new Date().toISOString(),
+    }).eq('id', planOrder.id)
     setSaving(false)
-    setModal(false)
-    setProdForm(p => ({ ...p, order_id: '' }))
-    loadOrders()
-    alert(error ? 'Błąd: ' + error.message : `Partia ${lotNumber} utworzona!`)
+    if (err) { setError(err.message); return }
+    setPlanModal(false); loadAll()
+  }
+  async function unplan(o) {
+    await supabase.from('orders').update({ status:'nowe', updated_at:new Date().toISOString() }).eq('id', o.id)
+    loadAll()
   }
 
-  function printChecklist() {
+  // ── Uruchomienie produkcji (FIFO) ──
+  async function openRun(o) {
+    const recipe = recipesMap[o.recipe_id] || (o.bom?.recipe_id ? recipesMap[o.bom.recipe_id] : null)
+    if (!recipe) { setError('Brak dopuszczonej receptury dla tego zlecenia.'); return }
+    const mass = massOf(o)
+    setRunOrder(o); setRunRecipe(recipe); setRunMass(mass)
+    setRunForm({ operator:'', foreman:'', notes: o.planning_notes || '' })
+    setError('')
+    // dostępność FIFO
+    const { data: used } = await supabase.from('production_batch_items').select('ingredient_batch_id, quantity_used_kg')
+    const usedMap = {}; (used||[]).forEach(u => { usedMap[u.ingredient_batch_id] = (usedMap[u.ingredient_batch_id]||0) + parseFloat(u.quantity_used_kg) })
+    const { data: stock } = await supabase.from('v_stock').select('*').eq('status','dopuszczona')
+      .order('received_date',{ascending:true}).order('expiry_date',{ascending:true,nullsFirst:false})
+    const availMap = {}
+    ;(stock||[]).forEach(s => {
+      const avail = parseFloat(s.current_kg) - (usedMap[s.id]||0)
+      if (avail > 0.001) { (availMap[s.ingredient_id] = availMap[s.ingredient_id] || []).push({ id:s.id, lot:s.delivery_lot, available:parseFloat(avail.toFixed(3)) }) }
+    })
+    const result = []
+    ;[...(recipe.recipe_items||[])].sort((a,b) => (a.sort_order||0)-(b.sort_order||0)).forEach(item => {
+      const needed = parseFloat(((mass * parseFloat(item.percentage||0)) / 100).toFixed(3))
+      let remaining = needed; const lots = []
+      for (const row of (availMap[item.ingredient_id] || [])) {
+        if (remaining <= 0.001) break
+        const take = Math.min(remaining, row.available)
+        if (take > 0.001) { lots.push({ lot:row.lot, ingredient_batch_id:row.id, kg:parseFloat(take.toFixed(3)) }); remaining = parseFloat((remaining-take).toFixed(3)) }
+      }
+      result.push({ ingredient_id:item.ingredient_id, ingredient:item.ingredients, needed, lots, shortage: remaining>0.001 ? remaining : 0 })
+    })
+    setFifo(result); setRunModal(true)
+  }
+
+  const hasShortage = fifo.some(r => r.shortage > 0)
+  const allergens = [...new Set(fifo.filter(r => r.ingredient?.has_allergen).map(r => r.ingredient.allergen_type))]
+
+  async function genLot() {
+    const year = new Date().getFullYear()
+    const { data } = await supabase.from('production_batches').select('lot_number').like('lot_number',`PROD-${year}-%`).order('lot_number',{ascending:false}).limit(1)
+    let n = 1
+    if (data && data.length) n = (parseInt((data[0].lot_number.split('-')[2])||'0',10)) + 1
+    return `PROD-${year}-${String(n).padStart(4,'0')}`
+  }
+
+  async function startProduction() {
+    setSaving(true); setError('')
+    const lot = await genLot()
+    const { data: pb, error: err } = await supabase.from('production_batches').insert({
+      lot_number: lot,
+      recipe_id: runRecipe.id,
+      quantity_kg: runMass,
+      operator: runForm.operator || null,
+      foreman: runForm.foreman || null,
+      notes: runForm.notes || null,
+      technologist: profile?.full_name || null,
+      client: runOrder.clients?.name || runRecipe.client || null,
+      created_by: profile?.id,
+    }).select().single()
+    if (err) { setError(err.message); setSaving(false); return }
+    const items = fifo.flatMap(r => r.lots.map((l,li) => ({
+      production_batch_id: pb.id, ingredient_batch_id: l.ingredient_batch_id,
+      ingredient_id: r.ingredient_id, quantity_used_kg: l.kg, fifo_order: li+1,
+    })))
+    if (items.length) await supabase.from('production_batch_items').insert(items)
+    await supabase.from('orders').update({ status:'w_produkcji', production_batch_id: pb.id, updated_at:new Date().toISOString() }).eq('id', runOrder.id)
+    setSaving(false); setRunModal(false); loadAll()
+  }
+
+  function printSheet() {
+    if (!runRecipe) return
     const now = new Date()
-    const dateStr = now.toLocaleDateString('pl-PL', { day: '2-digit', month: '2-digit', year: 'numeric' })
-    const timeStr = now.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })
-    const allergenBlock = allergens.length > 0
-      ? `<div class="allergen-box"><strong>⚠ ALERGENY W TEJ PARTII:</strong> ${allergens.join(', ')}</div>`
+    const dateStr = now.toLocaleDateString('pl-PL'), timeStr = now.toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit'})
+    const allergenBlock = allergens.length>0
+      ? `<div class="allergen-box"><strong>⚠ ALERGENY:</strong> ${allergens.join(', ')}</div>`
       : `<div class="no-allergen-box">✓ Brak alergenów w tej partii</div>`
-    const rows = fifoResult.map((r, idx) => {
-      const lotsText = r.lots.length > 0
-        ? r.lots.map((l, i) => `${l.lot}${r.lots.length > 1 ? ` (FIFO ${i + 1}: ${l.kg} kg)` : ''}`).join('<br>')
-        : '<span style="color:#A32D2D">BRAK W MAGAZYNIE</span>'
-      return `<tr>
-        <td class="check-cell"><div class="checkbox"></div></td>
-        <td class="num">${idx + 1}</td>
-        <td class="code">${r.ingredient?.code || ''}</td>
-        <td class="name">${r.ingredient?.name || ''}</td>
-        <td class="kg"><strong>${r.needed.toFixed(3)}</strong></td>
-        <td class="lot-cell">${lotsText}</td>
-        <td class="allergy-cell">${r.ingredient?.has_allergen ? `<span class="tag-allergy">${r.ingredient.allergen_type}</span>` : '—'}</td>
-        <td class="verify-cell"><div class="checkbox"></div></td>
-      </tr>`
+    const rows = fifo.map((r,idx) => {
+      const lotsText = r.lots.length ? r.lots.map((l,i) => `${l.lot}${r.lots.length>1?` (FIFO ${i+1}: ${l.kg} kg)`:''}`).join('<br>') : '<span style="color:#A32D2D">BRAK W MAGAZYNIE</span>'
+      return `<tr><td class="check-cell"><div class="checkbox"></div></td><td class="num">${idx+1}</td><td class="code">${r.ingredient?.code||''}</td><td>${r.ingredient?.name||''}</td><td class="kg"><strong>${r.needed.toFixed(3)}</strong></td><td class="lot-cell">${lotsText}</td><td class="allergy-cell">${r.ingredient?.has_allergen?`<span class="tag-allergy">${r.ingredient.allergen_type}</span>`:'—'}</td><td class="verify-cell"><div class="checkbox"></div></td></tr>`
     }).join('')
-    const html = `<!DOCTYPE html><html lang="pl"><head><meta charset="UTF-8"><title>Zlecenie produkcji - ${selectedRecipe.code}</title>
+    const html = `<!DOCTYPE html><html lang="pl"><head><meta charset="UTF-8"><title>Zlecenie produkcji - ${runRecipe.code}</title>
 <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:11px;color:#000;padding:16px}
-.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;border-bottom:2px solid #0F6E56;padding-bottom:10px}
+.header{display:flex;justify-content:space-between;border-bottom:2px solid #0F6E56;padding-bottom:10px;margin-bottom:12px}
 .company{font-size:16px;font-weight:bold;color:#0F6E56}.doc-title{font-size:13px;font-weight:bold;margin-top:4px}
 .lot-badge{background:#E1F5EE;border:1px solid #1D9E75;border-radius:4px;padding:4px 10px;font-size:12px;font-weight:bold;color:#0F6E56;margin-top:4px;display:inline-block}
 .info-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px}
-.info-box{border:1px solid #D3D1C7;border-radius:4px;padding:6px 10px}
-.info-label{font-size:9px;color:#888;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px}
-.info-value{font-size:12px;font-weight:bold}
-.section-title{font-size:11px;font-weight:bold;background:#0F6E56;color:#fff;padding:5px 10px;margin-bottom:0}
-table{width:100%;border-collapse:collapse;margin-bottom:10px}
-th{background:#F1EFE8;font-size:9px;font-weight:bold;text-transform:uppercase;padding:5px 6px;border:1px solid #D3D1C7;text-align:left}
-td{padding:5px 6px;border:1px solid #D3D1C7;vertical-align:middle;font-size:10px}
-tr:nth-child(even) td{background:#FAFAF8}
+.info-box{border:1px solid #D3D1C7;border-radius:4px;padding:6px 10px}.info-label{font-size:9px;color:#888;text-transform:uppercase;margin-bottom:2px}.info-value{font-size:12px;font-weight:bold}
+.section-title{font-size:11px;font-weight:bold;background:#0F6E56;color:#fff;padding:5px 10px}
+table{width:100%;border-collapse:collapse;margin-bottom:10px}th{background:#F1EFE8;font-size:9px;font-weight:bold;text-transform:uppercase;padding:5px 6px;border:1px solid #D3D1C7;text-align:left}
+td{padding:5px 6px;border:1px solid #D3D1C7;font-size:10px}tr:nth-child(even) td{background:#FAFAF8}
 .check-cell{width:24px;text-align:center}.checkbox{width:14px;height:14px;border:1.5px solid #333;border-radius:2px;margin:0 auto}
-.num{width:20px;text-align:center;color:#888}.code{width:70px;font-family:monospace;font-size:10px}
-.kg{width:70px;text-align:right}.lot-cell{font-family:monospace;font-size:9px}
-.verify-cell{width:60px;text-align:center}.allergy-cell{width:70px}
+.num{width:20px;text-align:center;color:#888}.code{width:70px;font-family:monospace}.kg{width:70px;text-align:right}.lot-cell{font-family:monospace;font-size:9px}.verify-cell{width:60px;text-align:center}.allergy-cell{width:70px}
 .tag-allergy{background:#FCEBEB;color:#791F1F;border:1px solid #F09595;border-radius:3px;padding:1px 5px;font-size:9px;font-weight:bold}
 .total-row td{background:#E1F5EE!important;font-weight:bold}
-.allergen-box{background:#FCEBEB;border:1.5px solid #E24B4A;border-radius:4px;padding:8px 12px;margin-bottom:10px;font-size:11px;color:#501313}
-.no-allergen-box{background:#E1F5EE;border:1px solid #1D9E75;border-radius:4px;padding:6px 12px;margin-bottom:10px;font-size:11px;color:#085041}
-.signature-section{margin-top:16px;border:1px solid #D3D1C7;border-radius:4px;padding:12px}
-.signature-title{font-size:11px;font-weight:bold;margin-bottom:12px;border-bottom:1px solid #D3D1C7;padding-bottom:6px}
-.signature-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px}
-.signature-label{font-size:9px;color:#888;text-transform:uppercase;margin-bottom:24px}
-.signature-line{border-bottom:1px solid #333;margin-bottom:4px}.signature-name{font-size:9px;color:#888}
-.footer{margin-top:10px;font-size:9px;color:#888;text-align:center;border-top:1px solid #D3D1C7;padding-top:6px}
-.instructions{background:#F1EFE8;border-radius:4px;padding:8px 12px;margin-bottom:10px;font-size:10px}
-.instructions strong{display:block;margin-bottom:4px}
+.allergen-box{background:#FCEBEB;border:1.5px solid #E24B4A;border-radius:4px;padding:8px 12px;margin-bottom:10px;color:#501313}.no-allergen-box{background:#E1F5EE;border:1px solid #1D9E75;border-radius:4px;padding:6px 12px;margin-bottom:10px;color:#085041}
+.sign{margin-top:16px;border:1px solid #D3D1C7;border-radius:4px;padding:12px}.sign-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px}.sl{border-bottom:1px solid #333;margin-top:24px;margin-bottom:4px}.sn{font-size:9px;color:#888}
 @media print{body{padding:8px}@page{margin:10mm;size:A4}}</style></head><body>
-<div class="header">
-  <div>
-    <div class="company">InstantMix Pro</div>
-    <div class="doc-title">Zlecenie produkcji / Checklista dozowania</div>
-    <div class="lot-badge">Numer partii zostanie nadany po zatwierdzeniu</div>
-  </div>
-  <div style="text-align:right;font-size:10px;color:#555">
-    <div>Data wydruku: <strong>${dateStr}</strong></div>
-    <div>Godzina: <strong>${timeStr}</strong></div>
-    <div style="margin-top:4px">Wydrukował: <strong>${profile?.full_name || '—'}</strong></div>
-  </div>
-</div>
+<div class="header"><div><div class="company">InstantMix Pro</div><div class="doc-title">Zlecenie produkcji / Checklista dozowania</div><div class="lot-badge">Nr partii nadany po uruchomieniu</div></div>
+<div style="text-align:right;font-size:10px;color:#555"><div>Data: <strong>${dateStr} ${timeStr}</strong></div><div>Zlecenie: <strong>${runOrder?.order_number||'—'}</strong></div><div>Wydrukował: <strong>${profile?.full_name||'—'}</strong></div></div></div>
 <div class="info-grid">
-  <div class="info-box"><div class="info-label">Kod receptury</div><div class="info-value">${selectedRecipe.code}</div></div>
-  <div class="info-box"><div class="info-label">Nazwa mieszanki</div><div class="info-value">${selectedRecipe.name}</div></div>
-  <div class="info-box"><div class="info-label">Wersja receptury</div><div class="info-value">${selectedRecipe.version}</div></div>
-  <div class="info-box"><div class="info-label">Klient</div><div class="info-value">${selectedRecipe.client || '—'}</div></div>
-  <div class="info-box"><div class="info-label">Masa wsadu</div><div class="info-value">${mass} kg</div></div>
-  <div class="info-box"><div class="info-label">Linia produkcyjna</div><div class="info-value">${selectedRecipe.production_line === 'bezglutenowa' ? 'BEZGLUTENOWA' : 'Zwykła'}</div></div>
-</div>
+<div class="info-box"><div class="info-label">Klient</div><div class="info-value">${runOrder?.clients?.name||'—'}</div></div>
+<div class="info-box"><div class="info-label">Wyrób (BOM)</div><div class="info-value">${runOrder?.bom?.code_ext||'—'}</div></div>
+<div class="info-box"><div class="info-label">Receptura</div><div class="info-value">${runRecipe.code} (v${runRecipe.version})</div></div>
+<div class="info-box"><div class="info-label">Ilość sztuk</div><div class="info-value">${runOrder?.qty_units||'—'}</div></div>
+<div class="info-box"><div class="info-label">Masa wsadu</div><div class="info-value">${runMass} kg</div></div>
+<div class="info-box"><div class="info-label">Linia</div><div class="info-value">${runRecipe.production_line==='bezglutenowa'?'BEZGLUTENOWA':'Zwykła'}</div></div></div>
 ${allergenBlock}
-<div class="instructions"><strong>Instrukcja dla operatora:</strong>Odważyć każdy składnik zgodnie z podaną ilością (kg). Po odważeniu zaznaczyć checkbox w kolumnie "Odważono". Po zweryfikowaniu przez brygadzistę zaznaczyć checkbox w kolumnie "Weryfikacja". Gotowy wsad przekazać do mieszania.</div>
-<div class="section-title">Lista składników do dozowania — metoda FIFO</div>
-<table><thead><tr>
-  <th class="check-cell">Odważ.</th><th class="num">Lp.</th><th class="code">Kod skł.</th>
-  <th>Nazwa składnika</th><th class="kg">Ilość (kg)</th><th>Partia dostawy (FIFO)</th>
-  <th class="allergy-cell">Alergen</th><th class="verify-cell">Weryfik.</th>
-</tr></thead><tbody>
+<div class="section-title">Lista składników do dozowania — FIFO</div>
+<table><thead><tr><th class="check-cell">Odważ.</th><th class="num">Lp.</th><th class="code">Kod</th><th>Nazwa składnika</th><th class="kg">Ilość (kg)</th><th>Partia (FIFO)</th><th class="allergy-cell">Alergen</th><th class="verify-cell">Weryf.</th></tr></thead><tbody>
 ${rows}
-<tr class="total-row"><td></td><td></td><td colspan="2" style="text-align:right">SUMA WSADU:</td>
-<td style="text-align:right">${fifoResult.reduce((s, r) => s + r.needed, 0).toFixed(3)} kg</td><td colspan="3"></td></tr>
+<tr class="total-row"><td></td><td></td><td colspan="2" style="text-align:right">SUMA WSADU:</td><td style="text-align:right">${fifo.reduce((s,r)=>s+r.needed,0).toFixed(3)} kg</td><td colspan="3"></td></tr>
 </tbody></table>
-<div class="signature-section">
-  <div class="signature-title">Potwierdzenie wykonania — podpisy</div>
-  <div class="signature-grid">
-    <div><div class="signature-label">Operator / Dozujący</div><div class="signature-line"></div><div class="signature-name">Imię, nazwisko i podpis</div><div style="margin-top:8px;font-size:9px;color:#888">Data: _______________</div></div>
-    <div><div class="signature-label">Brygadzista (weryfikacja)</div><div class="signature-line"></div><div class="signature-name">Imię, nazwisko i podpis</div><div style="margin-top:8px;font-size:9px;color:#888">Data: _______________</div></div>
-    <div><div class="signature-label">Technolog (zatwierdził recepturę)</div><div class="signature-line"></div><div class="signature-name">Imię, nazwisko i podpis</div><div style="margin-top:8px;font-size:9px;color:#888">Data: _______________</div></div>
-  </div>
-  <div style="margin-top:12px;border-top:1px solid #D3D1C7;padding-top:8px">
-    <div class="signature-label">Uwagi / odstępstwa od receptury:</div>
-    <div style="border-bottom:1px solid #ccc;margin-top:20px"></div>
-    <div style="border-bottom:1px solid #ccc;margin-top:14px"></div>
-  </div>
-</div>
-<div class="footer">InstantMix Pro &nbsp;|&nbsp; Dokument wygenerowany automatycznie &nbsp;|&nbsp; ${dateStr} ${timeStr} &nbsp;|&nbsp; Wydrukował: ${profile?.full_name || '—'} &nbsp;|&nbsp; Wyłącznie do użytku wewnętrznego</div>
-<script>window.onload = function() { window.print(); }</script>
-</body></html>`
-    const win = window.open('', '_blank')
-    win.document.write(html)
-    win.document.close()
+<div class="sign"><div style="font-weight:bold;border-bottom:1px solid #D3D1C7;padding-bottom:6px;margin-bottom:12px">Potwierdzenie wykonania — podpisy</div>
+<div class="sign-grid"><div><div class="sn">OPERATOR / DOZUJĄCY</div><div class="sl"></div><div class="sn">Imię, nazwisko, podpis · data</div></div><div><div class="sn">BRYGADZISTA (WERYFIKACJA)</div><div class="sl"></div><div class="sn">Imię, nazwisko, podpis · data</div></div><div><div class="sn">TECHNOLOG</div><div class="sl"></div><div class="sn">Imię, nazwisko, podpis · data</div></div></div></div>
+<script>window.onload=function(){window.print()}</script></body></html>`
+    const win = window.open('','_blank'); win.document.write(html); win.document.close()
   }
 
-  // ── Funkcje PAKOWANIE ───────────────────────────────────────
-  async function loadPackOrders() {
-    const { data } = await supabase.from('orders')
-      .select('*, recipes(code,name,version)')
-      .eq('status','w_realizacji')
-      .order('ship_date', { ascending: true })
-    setPackOrders(data || [])
-  }
-  async function loadPackLuzGroups() {
-    const { data } = await supabase.from('v_finished_goods').select('*')
-    const luz = (data || []).filter(g => (g.form === 'luz' || !g.form) && parseFloat(g.available_kg) > 0.001)
-    const map = {}
-    for (const g of luz) {
-      const k = g.recipe_id || g.recipe_code || '—'
-      if (!map[k]) map[k] = { recipe_id: g.recipe_id, recipe_code: g.recipe_code, recipe_name: g.recipe_name, recipe_version: g.recipe_version, client: g.client, total_kg: 0, bags: 0 }
-      map[k].total_kg += parseFloat(g.available_kg || 0)
-      map[k].bags += 1
-    }
-    setPackLuzGroups(Object.values(map).sort((a,b) => (a.recipe_name||'').localeCompare(b.recipe_name||'')))
-  }
-  useEffect(() => { if (mode === 'pakowanie') { loadPackOrders(); loadPackLuzGroups() } }, [mode])
-
-  async function loadPackData(ctx) {
-    const rid = ctx.recipe_id
-    const { data } = await supabase.from('v_finished_goods').select('*').order('received_date', { ascending: true })
-    const rows = data || []
-    const luz = rows.filter(g => g.recipe_id === rid && (g.form === 'luz' || !g.form) && parseFloat(g.available_kg) > 0.001)
-    const done = (ctx.kind === 'order')
-      ? rows.filter(g => g.order_id === ctx.id && g.form === 'spakowane').reduce((s,g) => s + parseFloat(g.original_kg || 0), 0)
-      : 0
-    setPackLuz(luz); setPackDone(parseFloat(done.toFixed(3)))
-  }
-
-  async function selectPackOrder(o) {
-    const sel = { ...o, kind: 'order' }
-    setPackSel(sel); setPackError(''); setPackMsg(''); setPackAssignOrder(''); setPackAssignList([])
-    setPackForm({
-      unit_type: 'worek',
-      pallets: o.pallets != null ? String(o.pallets) : '',
-      bags_per_pallet: o.bags_per_pallet != null ? String(o.bags_per_pallet) : '',
-      unit_weight_kg: o.bag_weight_kg != null ? String(o.bag_weight_kg) : '',
-      location: '', notes: ''
-    })
-    await loadPackData(sel)
-  }
-
-  async function selectPackLuz(grp) {
-    const sel = { kind: 'luz', recipe_id: grp.recipe_id, recipe_code: grp.recipe_code, recipe_name: grp.recipe_name, recipe_version: grp.recipe_version, client: grp.client, recipes: { code: grp.recipe_code, name: grp.recipe_name, version: grp.recipe_version } }
-    setPackSel(sel); setPackError(''); setPackMsg(''); setPackAssignOrder('')
-    setPackForm({ unit_type: 'worek', pallets: '', bags_per_pallet: '', unit_weight_kg: '', location: '', notes: '' })
-    // zlecenia w realizacji o IDENTYCZNEJ recepturze (wersja + klient)
-    const { data: ord } = await supabase.from('orders').select('id,order_number,client,quantity_kg,recipe_id,production_batch_id').eq('status','w_realizacji').eq('recipe_id', grp.recipe_id).order('ship_date', { ascending: true })
-    setPackAssignList(ord || [])
-    await loadPackData(sel)
-  }
-
-  const packUnits = (parseFloat(packForm.pallets) || 0) * (parseFloat(packForm.bags_per_pallet) || 0)
-  const packKg = packUnits * (parseFloat(packForm.unit_weight_kg) || 0)
-  const luzTotal = packLuz.reduce((s,g) => s + parseFloat(g.available_kg || 0), 0)
-  const packRemaining = (packSel && packSel.kind === 'order') ? Math.max(0, parseFloat(packSel.quantity_kg) - packDone) : 0
-
-  async function doPack() {
-    if (!packSel) return
-    const targetOrder = packSel.kind === 'order'
-      ? packSel
-      : (packAssignOrder ? packAssignList.find(o => o.id === packAssignOrder) : null)
-    const kg = parseFloat(packKg.toFixed(3))
-    if (!kg || kg <= 0) { setPackError('Podaj liczbę i wagę jednostek'); return }
-    if (kg > luzTotal + 0.001) { setPackError(`Za mało luzu na magazynie. Dostępne: ${luzTotal.toFixed(3)} kg`); return }
-    setPackSaving(true); setPackError(''); setPackMsg('')
-
-    const { data: op, error: opErr } = await supabase.from('packing_operations').insert({
-      order_id: targetOrder ? targetOrder.id : null, packing_date: new Date().toISOString().slice(0,10),
-      packed_by: profile?.id, total_packed_kg: kg, notes: packForm.notes || null
-    }).select().single()
-    if (opErr) { setPackError(opErr.message); setPackSaving(false); return }
-
-    // FIFO zużycie luzu
-    let remaining = kg
-    const consumed = []
-    let primaryBatch = null
-    for (const g of packLuz) {
-      if (remaining <= 0.001) break
-      const take = Math.min(remaining, parseFloat(g.available_kg))
-      if (take > 0.001) {
-        consumed.push({ packing_operation_id: op.id, source_finished_good_id: g.id, quantity_kg: parseFloat(take.toFixed(3)) })
-        if (!primaryBatch) primaryBatch = g.production_batch_id
-        remaining = parseFloat((remaining - take).toFixed(3))
-      }
-    }
-    if (consumed.length) {
-      const { error: pcErr } = await supabase.from('packing_consumed').insert(consumed)
-      if (pcErr) { setPackError(pcErr.message); setPackSaving(false); return }
-    }
-
-    // spakowana jednostka -> finished_goods
-    const { error: fgErr } = await supabase.from('finished_goods').insert({
-      production_batch_id: (targetOrder ? targetOrder.production_batch_id : null) || primaryBatch,
-      order_id: targetOrder ? targetOrder.id : null,
-      received_date: new Date().toISOString().slice(0,10),
-      quantity_kg: kg,
-      location: packForm.location || null,
-      notes: packForm.notes || null,
-      form: 'spakowane',
-      unit_type: packForm.unit_type,
-      pallets: packForm.pallets === '' ? null : parseInt(packForm.pallets),
-      bags_per_pallet: packForm.bags_per_pallet === '' ? null : parseInt(packForm.bags_per_pallet),
-      unit_count: packUnits || null,
-      unit_weight_kg: parseFloat(packForm.unit_weight_kg),
-      packing_operation_id: op.id,
-      created_by: profile?.id
-    })
-    if (fgErr) { setPackError(fgErr.message); setPackSaving(false); return }
-
-    // status zlecenia — sprawdź SUMĘ spakowanego dla całego zlecenia
-    if (targetOrder) {
-      const { data: pr } = await supabase.from('v_finished_goods').select('original_kg,form').eq('order_id', targetOrder.id)
-      const packedTotal = (pr || []).filter(r => r.form === 'spakowane').reduce((s,r) => s + parseFloat(r.original_kg || 0), 0)
-      if (packedTotal + 0.001 >= parseFloat(targetOrder.quantity_kg)) {
-        await supabase.from('orders').update({ status:'zrealizowane', updated_at: new Date().toISOString() }).eq('id', targetOrder.id)
-      }
-    }
-    setPackSaving(false)
-    setPackMsg(`Spakowano ${kg.toLocaleString('pl-PL')} kg (${packForm.pallets||0} pal × ${packForm.bags_per_pallet||0} × ${packForm.unit_weight_kg} kg ${packForm.unit_type==='worek'?'worki':'big bagi'})${targetOrder ? ' → zlecenie '+targetOrder.order_number : ''}.`)
-    await loadPackData(packSel)
-    await loadPackOrders()
-    await loadPackLuzGroups()
-    setPackForm(p => ({ ...p, pallets:'', notes:'' }))
-  }
-
-  if (mode === 'pakowanie') {
-    return (
-      <div>
-        <div className="page-header">
-          <div>
-            <div className="page-title">Pakowanie</div>
-            <div className="page-sub">Podział luzu (big bag) na worki/BB pod zlecenie</div>
-          </div>
-          <div className="flex" style={{ gap:6 }}>
-            <button className="btn btn-sm" onClick={() => setMode('produkcja')}>Produkcja</button>
-            <button className="btn btn-sm" style={{ background:'#1D9E75', color:'#fff', borderColor:'#1D9E75' }}>Pakowanie</button>
-          </div>
-        </div>
-
-        <div className="card" style={{ marginBottom:10 }}>
-          <div style={{ fontWeight:500, fontSize:13, marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-            <span>Zlecenia w realizacji (do spakowania)</span>
-            <button className="btn btn-sm" onClick={loadPackOrders}>Odśwież</button>
-          </div>
-          {packOrders.length === 0 ? (
-            <div className="muted" style={{ fontSize:12 }}>Brak zleceń w realizacji</div>
-          ) : (
-            <div style={{ overflowX:'auto' }}>
-              <table style={{ minWidth:600 }}>
-                <thead><tr>
-                  <th>Nr zlecenia</th><th>Klient</th><th>Receptura</th>
-                  <th style={{ textAlign:'right' }}>Ilość (kg)</th><th>Pakowanie</th><th></th>
-                </tr></thead>
-                <tbody>
-                  {packOrders.map(o => (
-                    <tr key={o.id} style={{ background: packSel?.id===o.id ? '#E1F5EE' : undefined }}>
-                      <td><span className="lot">{o.order_number}</span></td>
-                      <td style={{ fontWeight:500 }}>{o.client}</td>
-                      <td style={{ fontSize:12 }}>{o.recipes?.name} <span className="muted">({o.recipes?.version})</span></td>
-                      <td style={{ textAlign:'right', fontWeight:500 }}>{parseFloat(o.quantity_kg).toLocaleString('pl-PL')} kg</td>
-                      <td className="muted" style={{ fontSize:11 }}>{o.pallets && o.bags_per_pallet && o.bag_weight_kg ? `${o.pallets} pal × ${o.bags_per_pallet} × ${parseFloat(o.bag_weight_kg).toLocaleString('pl-PL')} kg` : '—'}</td>
-                      <td><button className="btn btn-sm btn-primary" style={{ fontSize:11 }} onClick={() => selectPackOrder(o)}>Pakuj</button></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
-        <div className="card" style={{ marginBottom:10 }}>
-          <div style={{ fontWeight:500, fontSize:13, marginBottom:8, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-            <span>Towar luzem na magazynie (do spakowania)</span>
-            <button className="btn btn-sm" onClick={loadPackLuzGroups}>Odśwież</button>
-          </div>
-          {packLuzGroups.length === 0 ? (
-            <div className="muted" style={{ fontSize:12 }}>Brak luzu na magazynie</div>
-          ) : (
-            <div style={{ overflowX:'auto' }}>
-              <table style={{ minWidth:520 }}>
-                <thead><tr>
-                  <th>Receptura</th><th style={{ textAlign:'right' }}>Big bagi</th>
-                  <th style={{ textAlign:'right' }}>Luz dostępny (kg)</th><th></th>
-                </tr></thead>
-                <tbody>
-                  {packLuzGroups.map(grp => (
-                    <tr key={grp.recipe_code} style={{ background: (packSel?.kind==='luz' && packSel?.recipe_code===grp.recipe_code) ? '#E1F5EE' : undefined }}>
-                      <td style={{ fontSize:12 }}><b>{grp.recipe_name}</b> <span className="muted">({grp.recipe_code} · {grp.recipe_version})</span></td>
-                      <td style={{ textAlign:'right' }}>{grp.bags}</td>
-                      <td style={{ textAlign:'right', fontWeight:600, color:'#0C447C' }}>{grp.total_kg.toLocaleString('pl-PL')} kg</td>
-                      <td><button className="btn btn-sm btn-primary" style={{ fontSize:11 }} onClick={() => selectPackLuz(grp)}>Pakuj</button></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
-        {packSel && (
-          <div className="card">
-            <div style={{ fontWeight:600, marginBottom:8 }}>
-              {packSel.kind === 'order'
-                ? <>Pakowanie zlecenia {packSel.order_number} — {packSel.client}</>
-                : <>Pakowanie luzu — {packSel.recipe_name} <span className="muted">({packSel.recipe_version})</span></>}
-            </div>
-            {packError && <div className="err-box">{packError}</div>}
-            {packMsg && <div className="info-box" style={{ marginBottom:10 }}>{packMsg}</div>}
-
-            <div className="stat-grid" style={{ marginBottom:10 }}>
-              {packSel.kind === 'order' && <>
-                <div className="stat-card"><div className="stat-label">Cel zlecenia</div><div className="stat-val" style={{ fontSize:18 }}>{parseFloat(packSel.quantity_kg).toLocaleString('pl-PL')} kg</div></div>
-                <div className="stat-card"><div className="stat-label">Już spakowano</div><div className="stat-val" style={{ fontSize:18, color:'#085041' }}>{packDone.toLocaleString('pl-PL')} kg</div></div>
-                <div className="stat-card"><div className="stat-label">Pozostało</div><div className="stat-val" style={{ fontSize:18, color:'#BA7517' }}>{packRemaining.toLocaleString('pl-PL')} kg</div></div>
-              </>}
-              <div className="stat-card"><div className="stat-label">Luz dostępny</div><div className="stat-val" style={{ fontSize:18, color:'#0C447C' }}>{luzTotal.toLocaleString('pl-PL')} kg</div></div>
-            </div>
-
-            <div style={{ marginBottom:10 }}>
-              <div style={{ fontSize:12, fontWeight:600, marginBottom:6 }}>Big bagi (luz) — pobór FIFO</div>
-              {packLuz.length === 0 ? <div className="muted" style={{ fontSize:12 }}>Brak luzu tej receptury na magazynie</div> : (
-                <table style={{ minWidth:480 }}>
-                  <thead><tr><th>Nr partii</th><th>Data przyjęcia</th><th style={{ textAlign:'right' }}>Dostępne (kg)</th></tr></thead>
-                  <tbody>{packLuz.map(g => (
-                    <tr key={g.id}><td><span className="lot" style={{ fontSize:11 }}>{g.lot_number}</span></td><td className="muted" style={{ fontSize:11 }}>{g.received_date}</td><td style={{ textAlign:'right', fontWeight:500 }}>{parseFloat(g.available_kg).toLocaleString('pl-PL')}</td></tr>
-                  ))}</tbody>
-                </table>
-              )}
-            </div>
-
-            <div style={{ background:'#F7F6F1', border:'0.5px solid #E3E1D8', borderRadius:8, padding:'10px 12px' }}>
-              <div style={{ fontSize:12, fontWeight:600, color:'#085041', marginBottom:8 }}>Spakuj partię</div>
-              {packSel.kind === 'luz' && (
-                <div style={{ marginBottom:10 }}>
-                  <label>Przypisz do zlecenia (opcjonalnie — tylko ta sama receptura)</label>
-                  <select value={packAssignOrder} onChange={e => setPackAssignOrder(e.target.value)}>
-                    <option value="">— bez przypisania (pakuj do stanu) —</option>
-                    {packAssignList.map(o => <option key={o.id} value={o.id}>{o.order_number} — {o.client} ({parseFloat(o.quantity_kg).toLocaleString('pl-PL')} kg)</option>)}
-                  </select>
-                  {packAssignList.length === 0 && <div className="muted" style={{ fontSize:11, marginTop:4 }}>Brak zleceń w realizacji o tej recepturze.</div>}
-                </div>
-              )}
-              <div className="fr">
-                <div><label>Rodzaj jednostki</label>
-                  <select value={packForm.unit_type} onChange={e => setPackForm(p => ({ ...p, unit_type:e.target.value }))}>
-                    <option value="worek">Worek</option><option value="big_bag">Big bag</option>
-                  </select>
-                </div>
-                <div><label>Palety</label><input type="number" min="0" step="1" value={packForm.pallets} onChange={e => setPackForm(p => ({ ...p, pallets:e.target.value }))} placeholder="np. 1" /></div>
-                <div><label>Jednostek na palecie</label><input type="number" min="0" step="1" value={packForm.bags_per_pallet} onChange={e => setPackForm(p => ({ ...p, bags_per_pallet:e.target.value }))} placeholder="np. 40" /></div>
-                <div><label>Waga 1 jednostki (kg)</label><input type="number" min="0" step="0.001" value={packForm.unit_weight_kg} onChange={e => setPackForm(p => ({ ...p, unit_weight_kg:e.target.value }))} placeholder="np. 20" /></div>
-              </div>
-              <div className="fr">
-                <div><label>Lokalizacja (opcjonalnie)</label><input value={packForm.location} onChange={e => setPackForm(p => ({ ...p, location:e.target.value }))} placeholder="np. Regał B-1" /></div>
-                <div><label>Uwagi</label><input value={packForm.notes} onChange={e => setPackForm(p => ({ ...p, notes:e.target.value }))} placeholder="opcjonalne" /></div>
-              </div>
-              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:8 }}>
-                <span style={{ fontSize:13 }}>{packUnits > 0 ? `${packUnits} szt. · ` : ''}Do spakowania w tej operacji: <b style={{ color:'#085041' }}>{packKg ? packKg.toLocaleString('pl-PL')+' kg' : '—'}</b></span>
-                {canPack && <button className="btn btn-primary" onClick={doPack} disabled={packSaving || !packKg}>{packSaving?'Pakowanie...':'Spakuj'}</button>}
-              </div>
-              {packKg > packRemaining && packRemaining > 0 && <div className="muted" style={{ fontSize:11, marginTop:6, color:'#BA7517' }}>Uwaga: pakujesz więcej niż pozostało do celu zlecenia.</div>}
-            </div>
-          </div>
-        )}
-      </div>
-    )
-  }
+  const pf = (k,v) => setPlanForm(p => ({ ...p, [k]:v }))
+  const rf = (k,v) => setRunForm(p => ({ ...p, [k]:v }))
+  const fmt = v => parseFloat(v||0).toLocaleString('pl-PL')
 
   return (
     <div>
       <div className="page-header">
-        <div>
-          <div className="page-title">Kalkulator receptur</div>
-          <div className="page-sub">Dostęp: Technolog (edycja), Brygadzista (odczyt)</div>
-        </div>
-        <div className="flex" style={{ gap:6, alignItems:'center' }}>
-          <button className="btn btn-sm" style={{ background:'#1D9E75', color:'#fff', borderColor:'#1D9E75' }}>Produkcja</button>
-          <button className="btn btn-sm" onClick={() => setMode('pakowanie')}>Pakowanie</button>
-          {fifoResult.length > 0 && (
-            <button className="btn btn-primary btn-sm" onClick={printChecklist}>Drukuj zlecenie produkcji</button>
-          )}
+        <div><div className="page-title">Planowanie zleceń</div><div className="page-sub">Kolejka produkcji — od zamówienia do uruchomienia partii (FIFO)</div></div>
+        <button className="btn btn-sm" onClick={loadAll}>↻</button>
+      </div>
+      {error && <div className="err-box" style={{ marginBottom:12 }}>{error}</div>}
+
+      <div style={{ fontSize:13, fontWeight:600, color:'#BA7517', margin:'4px 0 8px' }}>Do zaplanowania ({nowe.length})</div>
+      <div style={{ background:'#fff', border:'0.5px solid #D3D1C7', borderRadius:8, overflowX:'auto', marginBottom:18 }}>
+        <table style={{ minWidth:820 }}>
+          <thead><tr><th>Nr zlecenia</th><th>Klient</th><th>Wyrób</th><th style={{textAlign:'right'}}>Ilość szt.</th><th style={{textAlign:'right'}}>Waga</th><th>Wysyłka</th><th></th></tr></thead>
+          <tbody>
+            {loading && <tr><td colSpan={7} style={{textAlign:'center',padding:24,color:'#888'}}>Ładowanie...</td></tr>}
+            {!loading && nowe.length===0 && <tr><td colSpan={7} style={{textAlign:'center',padding:24,color:'#888'}}>Brak nowych zleceń</td></tr>}
+            {!loading && nowe.map(o => (
+              <tr key={o.id}>
+                <td><span className="lot">{o.order_number||'—'}</span></td>
+                <td style={{fontSize:12}}>{klient(o)}</td>
+                <td style={{fontWeight:500,fontSize:12}}>{wyrob(o)}</td>
+                <td style={{textAlign:'right'}}>{fmt(o.qty_units)}</td>
+                <td style={{textAlign:'right',fontWeight:600}}>{fmt(massOf(o))} kg</td>
+                <td className="muted" style={{fontSize:11}}>{o.ship_date||'—'}</td>
+                <td>{canEdit && <button className="btn btn-sm btn-primary" onClick={() => openPlan(o)}>Zaplanuj</button>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ fontSize:13, fontWeight:600, color:'#0F6E56', margin:'4px 0 8px' }}>Kolejka produkcji ({kolejka.length})</div>
+      <div style={{ background:'#fff', border:'0.5px solid #D3D1C7', borderRadius:8, overflowX:'auto' }}>
+        <table style={{ minWidth:900 }}>
+          <thead><tr><th style={{textAlign:'center'}}>#</th><th>Nr zlecenia</th><th>Klient</th><th>Wyrób</th><th style={{textAlign:'right'}}>Ilość szt.</th><th style={{textAlign:'right'}}>Waga</th><th>Data prod.</th><th></th></tr></thead>
+          <tbody>
+            {loading && <tr><td colSpan={8} style={{textAlign:'center',padding:24,color:'#888'}}>Ładowanie...</td></tr>}
+            {!loading && kolejka.length===0 && <tr><td colSpan={8} style={{textAlign:'center',padding:24,color:'#888'}}>Kolejka pusta</td></tr>}
+            {!loading && kolejka.map(o => (
+              <tr key={o.id}>
+                <td style={{textAlign:'center',fontWeight:700,color:'#5F5E5A'}}>{o.production_priority||'—'}</td>
+                <td><span className="lot">{o.order_number||'—'}</span></td>
+                <td style={{fontSize:12}}>{klient(o)}</td>
+                <td style={{fontWeight:500,fontSize:12}}>{wyrob(o)}</td>
+                <td style={{textAlign:'right'}}>{fmt(o.qty_units)}</td>
+                <td style={{textAlign:'right',fontWeight:600}}>{fmt(massOf(o))} kg</td>
+                <td className="muted" style={{fontSize:11}}>{o.planned_date||'—'}</td>
+                <td><div className="flex" style={{gap:4}}>
+                  {canEdit && <button className="btn btn-sm btn-primary" onClick={() => openRun(o)}>Uruchom produkcję</button>}
+                  {canEdit && <button className="btn btn-sm" onClick={() => openPlan(o)}>Edytuj</button>}
+                  {canEdit && <button className="btn btn-sm" onClick={() => unplan(o)}>Cofnij</button>}
+                </div></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Modal planowania */}
+      <div className={`modal-overlay ${planModal?'open':''}`} onClick={e => e.target===e.currentTarget && setPlanModal(false)}>
+        <div className="modal" style={{ maxWidth:480 }}>
+          <div className="modal-title">Zaplanuj zlecenie {planOrder?.order_number||''}</div>
+          {error && <div className="err-box">{error}</div>}
+          <div className="fr">
+            <div><label>Data produkcji</label><input type="date" value={planForm.planned_date} onChange={e => pf('planned_date',e.target.value)} /></div>
+            <div><label>Kolejność / priorytet</label><input type="number" min="1" step="1" value={planForm.production_priority} onChange={e => pf('production_priority',e.target.value)} /></div>
+          </div>
+          <div><label>Uwagi do produkcji</label><input value={planForm.planning_notes} onChange={e => pf('planning_notes',e.target.value)} placeholder="opcjonalne" /></div>
+          <div className="modal-footer">
+            <button className="btn" onClick={() => setPlanModal(false)}>Anuluj</button>
+            <button className="btn btn-primary" onClick={savePlan} disabled={saving}>{saving?'Zapisywanie...':'Zaplanuj'}</button>
+          </div>
         </div>
       </div>
 
-      <div className="card" style={{ marginBottom:10 }}>
-        <div style={{ fontWeight:500, fontSize:13, marginBottom:8, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-          <span>Zlecenia do zrealizowania</span>
-          <button className="btn btn-sm" onClick={loadOrders}>Odśwież</button>
-        </div>
-        {ordersLoading ? (
-          <div className="muted" style={{ fontSize:12 }}>Ładowanie...</div>
-        ) : orders.length === 0 ? (
-          <div className="muted" style={{ fontSize:12 }}>Brak aktywnych zleceń</div>
-        ) : (
-          <div style={{ overflowX:'auto' }}>
-            <table style={{ minWidth:600 }}>
-              <thead><tr>
-                <th>Nr zlecenia</th><th>Klient</th><th>Receptura</th>
-                <th style={{ textAlign:'right' }}>Ilość (kg)</th><th>Data wysyłki</th><th>Status</th><th></th>
-              </tr></thead>
+      {/* Modal uruchomienia produkcji */}
+      <div className={`modal-overlay ${runModal?'open':''}`} onClick={e => e.target===e.currentTarget && setRunModal(false)}>
+        <div className="modal" style={{ maxWidth:720 }}>
+          <div className="modal-title">Uruchom produkcję — {runOrder?.order_number||''}</div>
+          {runRecipe && <div style={{ background:'#F1EFE8', borderRadius:8, padding:10, marginBottom:10, fontSize:13 }}>
+            <b>{runOrder?.clients?.name}</b> · {wyrob(runOrder||{})} · receptura {runRecipe.code} (v{runRecipe.version}) · masa wsadu <b>{runMass} kg</b>
+          </div>}
+          {error && <div className="err-box">{error}</div>}
+          {hasShortage && <div className="warn-box">Uwaga: brak części surowców w magazynie. Możesz mimo to uruchomić produkcję (ERP) — brakujące pozycje oznaczone na czerwono.</div>}
+
+          <div style={{ maxHeight:280, overflowY:'auto', border:'0.5px solid #E3E1D8', borderRadius:6, marginBottom:10 }}>
+            <table style={{ minWidth:560 }}>
+              <thead style={{ position:'sticky', top:0, background:'#fff' }}><tr><th>Składnik</th><th style={{textAlign:'right'}}>Potrzeba</th><th>Partie FIFO</th></tr></thead>
               <tbody>
-                {orders.map(o => {
-                  const days = Math.ceil((new Date(o.ship_date) - new Date()) / (1000*60*60*24))
-                  return (
-                    <tr key={o.id} style={{ background: days <= 3 ? '#FCEBEB55' : days <= 7 ? '#FAEEDA33' : undefined }}>
-                      <td><span className="lot">{o.order_number}</span></td>
-                      <td style={{ fontWeight:500 }}>{o.client}</td>
-                      <td style={{ fontSize:12 }}>{o.recipes?.name} <span className="muted">({o.recipes?.version})</span></td>
-                      <td style={{ textAlign:'right', fontWeight:500 }}>{parseFloat(o.quantity_kg).toLocaleString('pl-PL')} kg</td>
-                      <td>
-                        <span className="muted">{o.ship_date}</span>
-                        {days < 0 && <span className="badge b-err" style={{ fontSize:10, marginLeft:4 }}>Po terminie</span>}
-                        {days >= 0 && days <= 3 && <span className="badge b-err" style={{ fontSize:10, marginLeft:4 }}>{days}d</span>}
-                        {days > 3 && days <= 7 && <span className="badge b-warn" style={{ fontSize:10, marginLeft:4 }}>{days}d</span>}
-                      </td>
-                      <td><span className={`badge ${o.status==='nowe'?'b-info':'b-warn'}`}>{o.status==='nowe'?'Nowe':'W realizacji'}</span></td>
-                      <td>
-                        <button className="btn btn-sm btn-primary" style={{ fontSize:11 }} onClick={() => {
-                          const recipe = recipes.find(r => r.id === o.recipe_id)
-                          if (recipe) { setSelectedRecipe(recipe); setSelectedClient(recipe.client_id||'') }
-                          setMass(parseFloat(o.quantity_kg))
-                          setProdForm(p => ({ ...p, order_id: o.id }))
-                          window.scrollTo(0, document.body.scrollHeight)
-                        }}>Załaduj</button>
-                      </td>
-                    </tr>
-                  )
-                })}
+                {fifo.map((r,i) => (
+                  <tr key={i}>
+                    <td style={{fontSize:12}}>{r.ingredient?.code} — {r.ingredient?.name}{r.ingredient?.has_allergen && <span className="badge b-err" style={{fontSize:9,marginLeft:4}}>{r.ingredient.allergen_type}</span>}</td>
+                    <td style={{textAlign:'right',fontWeight:600}}>{r.needed.toFixed(3)} kg</td>
+                    <td style={{fontSize:11,fontFamily:'monospace'}}>
+                      {r.lots.length ? r.lots.map((l,li) => <div key={li}>{l.lot} · {l.kg} kg</div>) : <span style={{color:'#A32D2D'}}>BRAK {r.shortage.toFixed(3)} kg</span>}
+                      {r.lots.length>0 && r.shortage>0 && <div style={{color:'#A32D2D'}}>brakuje {r.shortage.toFixed(3)} kg</div>}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
-        )}
-      </div>
 
-      <div className="card">
-        <div className="fr">
-          <div>
-            <label>Klient (filtr receptur)</label>
-            <select value={selectedClient} onChange={e => {
-              setSelectedClient(e.target.value)
-              setSelectedRecipe(null)
-              setFifoResult([])
-            }}>
-              <option value="">— wszyscy klienci —</option>
-              {clients.map(c => <option key={c.id} value={c.id}>{c.number} — {c.name}</option>)}
-            </select>
-          </div>
-          <div>
-            <label>Receptura</label>
-            <select value={selectedRecipe?.id || ''} onChange={e => setSelectedRecipe(filteredRecipes.find(r => r.id === e.target.value) || null)} disabled={!canEdit}>
-              <option value="">— wybierz recepturę —</option>
-              {filteredRecipes.map(r => <option key={r.id} value={r.id}>{r.client ? r.client + ' › ' : ''}{r.code} › {r.name} ({r.version})</option>)}
-            </select>
-          </div>
-          <div>
-            <label>Masa wsadu (kg)</label>
-            <input type="number" min="1" step="1" value={mass} onChange={e => setMass(parseFloat(e.target.value))} disabled={!canEdit} />
-          </div>
-        </div>
-
-        {loading && <div style={{ textAlign: 'center', padding: 24 }}><span className="spinner" /> Obliczam FIFO...</div>}
-
-        {!loading && fifoResult.length > 0 && (
-          <>
-            <div className="divider" />
-            <div className="info-box">FIFO aktywne — składniki dozowane z najstarszych partii (wg daty przyjęcia)</div>
-            {hasShortage && <div className="warn-box">Niedobór magazynowy — brak wystarczającej ilości niektórych składników.</div>}
-            {allergens.length > 0 && <div className="err-box">Alergeny w partii: {allergens.join(', ')}</div>}
-
-            <div className="card-0" style={{ marginBottom: 12 }}>
-              <table>
-                <thead><tr>
-                  <th>Kod skł.</th><th>Nazwa</th><th style={{ textAlign: 'right' }}>Potrzeba (kg)</th>
-                  <th>Partia FIFO</th><th>Kg z partii</th><th>Alergen</th>
-                </tr></thead>
-                <tbody>
-                  {fifoResult.map(r => {
-                    const totalAvail = r.lots.reduce((s,l) => s+l.kg, 0)
-                    const hasShortageItem = r.shortage > 0.001
-                    return r.lots.length > 0 ? [
-                      ...r.lots.map((l, i) => (
-                        <tr key={`${r.id}-${i}`} style={{ background: hasShortageItem ? '#FAEEDA33' : r.lots.length > 1 && i === 0 ? '#E6F1FB33' : undefined }}>
-                          <td>{i === 0 && <span className="lot">{r.ingredient?.code}</span>}</td>
-                          <td>{i === 0 && r.ingredient?.name}</td>
-                          <td style={{ fontWeight: i === 0 ? 500 : undefined, textAlign: 'right' }}>{i === 0 ? r.needed.toFixed(3) : ''}</td>
-                          <td><span className="lot">{l.lot}</span>{r.lots.length > 1 && <span className="fifo-badge">FIFO {i + 1}</span>}</td>
-                          <td style={{ textAlign: 'right' }}>{l.kg.toFixed(3)}</td>
-                          <td>{i === 0 && r.ingredient?.has_allergen ? <span className="badge b-err">{r.ingredient.allergen_type}</span> : ''}</td>
-                        </tr>
-                      )),
-                      hasShortageItem ? (
-                        <tr key={`${r.id}-shortage`} style={{ background:'#FCEBEB55' }}>
-                          <td colSpan={2} style={{ paddingLeft:24, color:'#A32D2D', fontSize:11 }}>⚠ Niedobór składnika</td>
-                          <td style={{ textAlign:'right', color:'#A32D2D', fontWeight:500 }}>{r.needed.toFixed(3)}</td>
-                          <td style={{ color:'#A32D2D', fontSize:11 }}>Dostępne: <b>{totalAvail.toFixed(3)} kg</b> · Brakuje: <b>{r.shortage.toFixed(3)} kg</b></td>
-                          <td colSpan={2}><span className="badge b-err">NIEDOBÓR</span></td>
-                        </tr>
-                      ) : null
-                    ] : (
-                      <tr key={r.id} style={{ background:'#FCEBEB55' }}>
-                        <td><span className="lot">{r.ingredient?.code}</span></td>
-                        <td>{r.ingredient?.name}</td>
-                        <td style={{ fontWeight: 500, textAlign: 'right', color:'#A32D2D' }}>{r.needed.toFixed(3)}</td>
-                        <td colSpan={2}><span className="badge b-err">BRAK W MAGAZYNIE</span> <span className="muted" style={{fontSize:11}}>Dostępne: 0 kg · Brakuje: {r.needed.toFixed(3)} kg</span></td>
-                        <td>{r.ingredient?.has_allergen ? <span className="badge b-err">{r.ingredient.allergen_type}</span> : ''}</td>
-                      </tr>
-                    )
-                  })}
-                  <tr style={{ background: '#E1F5EE' }}>
-                    <td colSpan={2} style={{ fontWeight: 500, textAlign: 'right' }}>SUMA wsadu</td>
-                    <td style={{ fontWeight: 500, textAlign: 'right' }}>{fifoResult.reduce((s, r) => s + r.needed, 0).toFixed(3)} kg</td>
-                    <td colSpan={3}></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            {canEdit && !hasShortage && (
-              <button className="btn btn-primary btn-sm" onClick={() => setModal(true)}>
-                Zatwierdź i utwórz partię produkcji
-              </button>
-            )}
-          </>
-        )}
-
-        {!loading && !selectedRecipe && (
-          <div style={{ textAlign: 'center', padding: 24, color: '#888' }}>
-            Wybierz klienta i recepturę, aby zobaczyć dozowanie FIFO.
-          </div>
-        )}
-      </div>
-
-      <div className={`modal-overlay ${modal ? 'open' : ''}`} onClick={e => e.target === e.currentTarget && setModal(false)}>
-        <div className="modal">
-          <div className="modal-title">Zatwierdzenie partii produkcji</div>
-          <div style={{ background: '#F1EFE8', borderRadius: 8, padding: 10, marginBottom: 12, fontSize: 13 }}>
-            Receptura: <b>{selectedRecipe?.code} — {selectedRecipe?.name} {selectedRecipe?.version}</b><br />
-            Klient: <b>{selectedRecipe?.client || '—'}</b><br />
-            Masa wsadu: <b>{mass} kg</b><br />
-            Technolog: <b>{profile?.full_name}</b>
-          </div>
           <div className="fr">
-            <div><label>Operator (imię, nazwisko)</label><input value={prodForm.operator} onChange={e => setProdForm(p => ({ ...p, operator: e.target.value }))} /></div>
-            <div><label>Brygadzista</label><input value={prodForm.foreman} onChange={e => setProdForm(p => ({ ...p, foreman: e.target.value }))} /></div>
+            <div><label>Operator</label><input value={runForm.operator} onChange={e => rf('operator',e.target.value)} /></div>
+            <div><label>Brygadzista</label><input value={runForm.foreman} onChange={e => rf('foreman',e.target.value)} /></div>
           </div>
-          <div><label>Uwagi</label><input value={prodForm.notes} onChange={e => setProdForm(p => ({ ...p, notes: e.target.value }))} placeholder="opcjonalne" /></div>
+          <div><label>Uwagi</label><input value={runForm.notes} onChange={e => rf('notes',e.target.value)} placeholder="opcjonalne" /></div>
+
           <div className="modal-footer">
-            <button className="btn" onClick={() => setModal(false)}>Anuluj</button>
-            <button className="btn btn-primary" onClick={createProductionBatch} disabled={saving}>
-              {saving ? 'Tworzenie...' : 'Zatwierdź i zapisz'}
-            </button>
+            <button className="btn" onClick={() => setRunModal(false)}>Anuluj</button>
+            <button className="btn" onClick={printSheet}>🖨 Wydruk zlecenia</button>
+            <button className="btn btn-primary" onClick={startProduction} disabled={saving}>{saving?'Tworzenie partii...':'Utwórz partię i rozpocznij'}</button>
           </div>
         </div>
       </div>
