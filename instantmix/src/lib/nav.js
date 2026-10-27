@@ -24,7 +24,7 @@ export const DEPARTMENTS = [
     { id: 'produkcja',         label: 'Produkcja' },
     { id: 'pakowanie',         label: 'Pakowanie' },
     { id: 'magazynwg',         label: 'Magazyn WG' },
-    { id: 'inwentura',         label: 'Inwentura',           wip: true },
+    { id: 'inwentura',         label: 'Inwentura' },
   ]},
   { id: 'pulpit', label: 'Pulpit', tabs: [
     { id: 'dashboard',         label: 'Dashboard' },
