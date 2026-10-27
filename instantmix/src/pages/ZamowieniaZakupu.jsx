@@ -284,6 +284,14 @@ export default function ZamowieniaZakupu() {
               <label style={{ margin:0 }}>Pozycje</label>
               <button type="button" className="btn btn-sm" onClick={addLine}>+ Dodaj pozycję</button>
             </div>
+            <div className="flex" style={{ gap:6, marginBottom:4, alignItems:'center', flexWrap:'wrap', fontSize:11, fontWeight:500, color:'#5F5E5A' }}>
+              <span style={{ width:120 }}>Typ</span>
+              <span style={{ flex:2, minWidth:180 }}>Pozycja (składnik / opakowanie)</span>
+              <span style={{ width:90 }}>Ilość</span>
+              <span style={{ width:60 }}>Jedn.</span>
+              <span style={{ width:90 }}>Cena (zł)</span>
+              <span style={{ width:28 }}></span>
+            </div>
             {lines.map((l, i) => (
               <div key={i} className="flex" style={{ gap:6, marginBottom:6, alignItems:'center', flexWrap:'wrap' }}>
                 <select value={l.item_type} onChange={e => updLine(i, { item_type:e.target.value, ingredient_id:'', packaging_material_id:'' })} style={{ width:120 }}>
