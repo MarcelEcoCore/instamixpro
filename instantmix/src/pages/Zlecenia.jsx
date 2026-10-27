@@ -109,13 +109,15 @@ export default function Zlecenia() {
     if (!selBom || qty <= 0) return []
     const rows = []
     const u = matById(selBom.unit_material_id)
-    if (u) rows.push({ code:u.code, name:u.name, unit:u.unit, qty: qty, rola:'worek' })
+    if (u) rows.push({ code:u.code, name:u.name, unit:u.unit, przelicznik:'1 / szt.', total: qty })
     const pal = matById(selBom.pallet_material_id)
-    if (pal && previewPallets) rows.push({ code:pal.code, name:pal.name, unit:pal.unit, qty: previewPallets, rola:'paleta' })
+    if (pal && previewPallets) rows.push({ code:pal.code, name:pal.name, unit:pal.unit, przelicznik:'1 / paletę', total: previewPallets })
     ;(bomItemsMap[selBom.id] || []).forEach(it => {
       const m = it.packaging_materials
-      const q = it.per === 'paleta' ? (parseFloat(it.qty_per)||0) * (previewPallets||0) : (parseFloat(it.qty_per)||0) * qty
-      rows.push({ code:m?.code, name:m?.name, unit:m?.unit, qty:q, rola: it.per==='paleta'?'na paletę':'na sztukę' })
+      const per = parseFloat(it.qty_per) || 0
+      const naPalete = it.per === 'paleta'
+      const total = naPalete ? per * (previewPallets||0) : per * qty
+      rows.push({ code:m?.code, name:m?.name, unit:m?.unit, przelicznik: `${per} / ${naPalete?'paletę':'szt.'}`, total })
     })
     return rows
   }
@@ -344,13 +346,13 @@ export default function Zlecenia() {
             <div style={{ marginBottom:10 }}>
               <div style={{ fontSize:12, fontWeight:600, color:'#085041', marginBottom:6 }}>Materiały opakowaniowe wg BOM</div>
               <table style={{ width:'100%' }}>
-                <thead><tr><th>Materiał</th><th style={{ textAlign:'right', width:120 }}>Potrzeba</th><th style={{ width:90 }}>Reguła</th></tr></thead>
+                <thead><tr><th>Materiał</th><th style={{ width:110 }}>Przelicznik</th><th style={{ textAlign:'right', width:120 }}>Łącznie</th></tr></thead>
                 <tbody>
                   {bomMaterials().map((r,i) => (
                     <tr key={i}>
                       <td style={{ fontSize:12 }}>{r.code ? r.code+' — ' : ''}{r.name||'—'}</td>
-                      <td style={{ textAlign:'right', fontWeight:500 }}>{parseFloat((r.qty||0).toFixed(3)).toLocaleString('pl-PL')} {r.unit||''}</td>
-                      <td className="muted" style={{ fontSize:11 }}>{r.rola}</td>
+                      <td className="muted" style={{ fontSize:11 }}>{r.przelicznik}</td>
+                      <td style={{ textAlign:'right', fontWeight:500 }}>{parseFloat((r.total||0).toFixed(3)).toLocaleString('pl-PL')} {r.unit||''}</td>
                     </tr>
                   ))}
                 </tbody>
