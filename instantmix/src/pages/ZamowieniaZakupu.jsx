@@ -126,9 +126,9 @@ export default function ZamowieniaZakupu() {
 
   async function generatePoNumber() {
     const year = new Date().getFullYear()
-    const { data } = await supabase.from('purchase_orders').select('po_number').ilike('po_number', `ZK-${year}-%`).order('po_number', { ascending:false }).limit(1)
-    if (data && data.length > 0) { const last = parseInt(data[0].po_number.split('-')[2]) || 0; return `ZK-${year}-${String(last+1).padStart(4,'0')}` }
-    return `ZK-${year}-0001`
+    const { data } = await supabase.from('purchase_orders').select('po_number').ilike('po_number', `ZZ-${year}-%`).order('po_number', { ascending:false }).limit(1)
+    if (data && data.length > 0) { const last = parseInt(data[0].po_number.split('-')[2]) || 0; return `ZZ-${year}-${String(last+1).padStart(4,'0')}` }
+    return `ZZ-${year}-0001`
   }
 
   async function save() {
@@ -196,7 +196,7 @@ export default function ZamowieniaZakupu() {
         <table style={{ minWidth:900 }}>
           <thead style={{ position:'sticky', top:0, zIndex:10, background:'#fff' }}><tr>
             <th style={{ width:32 }}></th>
-            <th>Nr zamówienia</th><th>Dostawca</th><th>Data</th><th>Termin dostawy</th>
+            <th>Nr zamówienia</th><th>Dostawca</th><th>Data ZZ</th><th>Termin dostawy</th>
             <th style={{ textAlign:'center' }}>Pozycji</th><th style={{ textAlign:'right' }}>Wartość</th>
             <th>Status</th><th></th>
           </tr></thead>
