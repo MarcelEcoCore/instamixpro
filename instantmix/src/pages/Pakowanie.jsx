@@ -177,7 +177,9 @@ export default function Pakowanie() {
                   <td style={{textAlign:'right',color:'#085041'}}>{fmt(pu)}</td>
                   <td style={{textAlign:'right',fontWeight:600}}>{fmt(luz)} kg{g>0 && <span className="muted" style={{fontSize:10}}> (~{Math.floor(luz/g)} szt.)</span>}</td>
                   <td><span className={`badge ${o.status==='spakowane'?'b-ok':'b-warn'}`} style={{fontSize:10}}>{o.status==='spakowane'?'Spakowane':o.status==='w_pakowaniu'?'W pakowaniu':'Wyprodukowane'}</span></td>
-                  <td>{canEdit && pu < target && <button className="btn btn-sm btn-primary" onClick={() => openPack(o)}>Pakuj</button>}</td>
+                  <td>{canEdit && pu < target && (luz > 0.001
+                    ? <button className="btn btn-sm btn-primary" onClick={() => openPack(o)}>Pakuj</button>
+                    : <span className="muted" style={{fontSize:11}}>Brak luzu w WG — oznacz w Produkcji</span>)}</td>
                 </tr>
               )
             })}
