@@ -2,318 +2,282 @@ import React, { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../App'
 
-const STATUS = { nowe:'Nowe', zaplanowane:'Zaplanowane', w_produkcji:'W produkcji' }
+const STAGE = { planowana:'Planowana', wyprodukowana:'Wyprodukowana', anulowana:'Anulowana' }
 
-export default function Kalkulator() {
+export default function Planowanie() {
   const { profile } = useAuth()
-  const canEdit = true // dostępy później
+  const canEdit = true
 
-  const [orders, setOrders] = useState([])
-  const [recipesMap, setRecipesMap] = useState({})
+  const [salesNowe, setSalesNowe] = useState([])
+  const [prodOrders, setProdOrders] = useState([])
+  const [recipes, setRecipes] = useState([])
   const [loading, setLoading] = useState(true)
+  const [expanded, setExpanded] = useState(null)
+
+  // wybór zleceń sprzedaży do zaplanowania
+  const [selOrders, setSelOrders] = useState([])
+
+  // formularz zlecenia produkcji
+  const [modal, setModal] = useState(false)
+  const [recipeId, setRecipeId] = useState('')
+  const [attached, setAttached] = useState([])        // order ids
+  const [wsady, setWsady] = useState([{ planned_kg:'', bb:'1' }])
+  const [notes, setNotes] = useState('')
+  const [nextSeq, setNextSeq] = useState('NNNN')
+  const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
-  // planowanie
-  const [planModal, setPlanModal] = useState(false)
-  const [planOrder, setPlanOrder] = useState(null)
-  const [planForm, setPlanForm] = useState({ planned_date:'', production_priority:'', planning_notes:'' })
+  useEffect(() => { load() }, [])
 
-  // uruchomienie produkcji
-  const [runModal, setRunModal] = useState(false)
-  const [runOrder, setRunOrder] = useState(null)
-  const [runRecipe, setRunRecipe] = useState(null)
-  const [runMass, setRunMass] = useState(0)
-  const [fifo, setFifo] = useState([])
-  const [runForm, setRunForm] = useState({ operator:'', foreman:'', notes:'' })
-  const [saving, setSaving] = useState(false)
-
-  useEffect(() => { loadAll() }, [])
-
-  async function loadAll() {
-    setLoading(true); setError('')
-    const [{ data: ords, error: oerr }, { data: recs }] = await Promise.all([
-      supabase.from('orders')
-        .select('*, clients(number,name), bom(code_ext,recipe_id,gramatura_kg,units_per_pallet), recipes(code,name,version)')
-        .in('status', ['nowe','zaplanowane'])
-        .order('production_priority', { ascending:true, nullsFirst:false })
-        .order('ship_date', { ascending:true }),
-      supabase.from('recipes').select('*, recipe_items(*, ingredients(*))').eq('status','dopuszczona'),
+  async function load() {
+    setLoading(true)
+    const [{ data: s }, { data: po }, { data: rec }] = await Promise.all([
+      supabase.from('orders').select('id,order_number,status,qty_units,quantity_kg,recipe_id,clients(number,name),bom(code_ext,recipe_id)').eq('status','nowe').order('ship_date',{ascending:true}),
+      supabase.from('production_batches').select('id,lot_number,recipe_id,quantity_kg,client,prod_stage,notes,recipes(code,name,version),production_wsady(id,wsad_no,planned_kg,bb_plan_no),production_order_sales(order_id,orders(order_number,clients(name)))').not('prod_stage','is',null).order('lot_number',{ascending:false}),
+      supabase.from('recipes').select('id,code,name,version,client,status').eq('status','dopuszczona').order('code'),
     ])
-    if (oerr) setError(oerr.message)
-    const rm = {}; (recs||[]).forEach(r => { rm[r.id] = r })
-    setRecipesMap(rm)
-    setOrders(ords || [])
+    setSalesNowe(s||[]); setProdOrders(po||[]); setRecipes(rec||[])
     setLoading(false)
   }
 
-  const massOf = o => {
-    if (o.quantity_kg != null && parseFloat(o.quantity_kg) > 0) return parseFloat(o.quantity_kg)
-    const g = parseFloat(o.bom?.gramatura_kg || 0), u = parseFloat(o.qty_units || 0)
-    return parseFloat((g*u).toFixed(3))
-  }
-  const wyrob = o => o.bom?.code_ext || o.recipes?.code || '—'
+  const recipeOf = o => o.recipe_id || o.bom?.recipe_id || null
   const klient = o => o.clients ? `${o.clients.number||''} ${o.clients.name||''}`.trim() : '—'
+  const fmt = v => parseFloat(v||0).toLocaleString('pl-PL',{maximumFractionDigits:3})
 
-  const nowe = orders.filter(o => o.status === 'nowe')
-  const kolejka = orders.filter(o => o.status === 'zaplanowane')
-
-  // ── Planowanie ──
-  function openPlan(o) {
-    const nextPrio = (kolejka.reduce((m,x) => Math.max(m, parseInt(x.production_priority||0,10)), 0)) + 1
-    setPlanOrder(o)
-    setPlanForm({ planned_date: o.planned_date || new Date().toISOString().slice(0,10), production_priority: o.production_priority || nextPrio, planning_notes: o.planning_notes || '' })
-    setError(''); setPlanModal(true)
-  }
-  async function savePlan() {
-    setSaving(true); setError('')
-    const { error: err } = await supabase.from('orders').update({
-      status: 'zaplanowane',
-      planned_date: planForm.planned_date || null,
-      production_priority: planForm.production_priority==='' ? null : parseInt(planForm.production_priority,10),
-      planning_notes: planForm.planning_notes || null,
-      updated_at: new Date().toISOString(),
-    }).eq('id', planOrder.id)
-    setSaving(false)
-    if (err) { setError(err.message); return }
-    setPlanModal(false); loadAll()
-  }
-  async function unplan(o) {
-    await supabase.from('orders').update({ status:'nowe', updated_at:new Date().toISOString() }).eq('id', o.id)
-    loadAll()
+  // wybór: wszystkie wybrane muszą mieć tę samą recepturę
+  const selRecipe = selOrders.length ? recipeOf(salesNowe.find(o=>o.id===selOrders[0])||{}) : null
+  function toggleSel(o) {
+    const r = recipeOf(o)
+    if (selOrders.includes(o.id)) setSelOrders(selOrders.filter(x=>x!==o.id))
+    else { if (selOrders.length && r!==selRecipe) return; setSelOrders([...selOrders, o.id]) }
   }
 
-  // ── Uruchomienie produkcji (FIFO) ──
-  async function openRun(o) {
-    const recipe = recipesMap[o.recipe_id] || (o.bom?.recipe_id ? recipesMap[o.bom.recipe_id] : null)
-    if (!recipe) { setError('Brak dopuszczonej receptury dla tego zlecenia.'); return }
-    const mass = massOf(o)
-    setRunOrder(o); setRunRecipe(recipe); setRunMass(mass)
-    setRunForm({ operator:'', foreman:'', notes: o.planning_notes || '' })
-    setError('')
-    // dostępność FIFO
-    const { data: used } = await supabase.from('production_batch_items').select('ingredient_batch_id, quantity_used_kg')
-    const usedMap = {}; (used||[]).forEach(u => { usedMap[u.ingredient_batch_id] = (usedMap[u.ingredient_batch_id]||0) + parseFloat(u.quantity_used_kg) })
-    const { data: stock } = await supabase.from('v_stock').select('*').eq('status','dopuszczona')
-      .order('received_date',{ascending:true}).order('expiry_date',{ascending:true,nullsFirst:false})
-    const availMap = {}
-    ;(stock||[]).forEach(s => {
-      const avail = parseFloat(s.current_kg) - (usedMap[s.id]||0)
-      if (avail > 0.001) { (availMap[s.ingredient_id] = availMap[s.ingredient_id] || []).push({ id:s.id, lot:s.delivery_lot, available:parseFloat(avail.toFixed(3)) }) }
-    })
-    const result = []
-    ;[...(recipe.recipe_items||[])].sort((a,b) => (a.sort_order||0)-(b.sort_order||0)).forEach(item => {
-      const needed = parseFloat(((mass * parseFloat(item.percentage||0)) / 100).toFixed(3))
-      let remaining = needed; const lots = []
-      for (const row of (availMap[item.ingredient_id] || [])) {
-        if (remaining <= 0.001) break
-        const take = Math.min(remaining, row.available)
-        if (take > 0.001) { lots.push({ lot:row.lot, ingredient_batch_id:row.id, kg:parseFloat(take.toFixed(3)) }); remaining = parseFloat((remaining-take).toFixed(3)) }
-      }
-      result.push({ ingredient_id:item.ingredient_id, ingredient:item.ingredients, needed, lots, shortage: remaining>0.001 ? remaining : 0 })
-    })
-    setFifo(result); setRunModal(true)
-  }
-
-  const hasShortage = fifo.some(r => r.shortage > 0)
-  const allergens = [...new Set(fifo.filter(r => r.ingredient?.has_allergen).map(r => r.ingredient.allergen_type))]
-
-  async function genLot() {
+  async function peekNextSeq() {
     const year = new Date().getFullYear()
     const { data } = await supabase.from('production_batches').select('lot_number').like('lot_number',`PROD-${year}-%`).order('lot_number',{ascending:false}).limit(1)
     let n = 1
-    if (data && data.length) n = (parseInt((data[0].lot_number.split('-')[2])||'0',10)) + 1
-    return `PROD-${year}-${String(n).padStart(4,'0')}`
+    if (data && data.length) n = (parseInt(data[0].lot_number.split('-')[2]||'0',10))+1
+    return String(n).padStart(4,'0')
   }
 
-  async function startProduction() {
+  async function openFromSales() {
+    if (!selOrders.length) return
+    const r = selRecipe
+    const seq = await peekNextSeq()
+    const totalKg = selOrders.reduce((s,id)=>{ const o=salesNowe.find(x=>x.id===id); return s+parseFloat(o?.quantity_kg||0) },0)
+    setRecipeId(r||''); setAttached([...selOrders]); setNextSeq(seq)
+    setWsady([{ planned_kg: totalKg>0?String(parseFloat(totalKg.toFixed(3))):'', bb:'1' }])
+    setNotes(''); setError(''); setModal(true)
+  }
+  async function openStock() {
+    const seq = await peekNextSeq()
+    setRecipeId(''); setAttached([]); setNextSeq(seq)
+    setWsady([{ planned_kg:'', bb:'1' }]); setNotes(''); setError(''); setModal(true)
+  }
+
+  const recipe = recipes.find(r => r.id === recipeId)
+
+  // bigbagi z planu wsadów
+  function bigbagsPreview() {
+    const groups = {}
+    wsady.forEach((w, i) => {
+      const bb = parseInt(w.bb)||1
+      if (!groups[bb]) groups[bb] = []
+      groups[bb].push({ wsad_no:i+1, kg:parseFloat(w.planned_kg||0) })
+    })
+    return Object.keys(groups).map(Number).sort((a,b)=>a-b).map(bb => {
+      const list = groups[bb]
+      const code = recipe ? `${recipe.code}/${nextSeq}/${list.map(w=>'W'+w.wsad_no).join('/')}/BB${String(bb).padStart(2,'0')}` : '—'
+      return { bb, list, kg: list.reduce((s,w)=>s+w.kg,0), code, over: list.length>3 }
+    })
+  }
+  const bbs = bigbagsPreview()
+  const totalPlanned = wsady.reduce((s,w)=>s+parseFloat(w.planned_kg||0),0)
+
+  const setW = (i,k,v) => setWsady(ws => ws.map((w,idx)=> idx===i?{...w,[k]:v}:w))
+  const addW = () => setWsady(ws => [...ws, { planned_kg:'', bb:String((Math.max(0,...ws.map(x=>parseInt(x.bb)||1)))) }])
+  const delW = i => setWsady(ws => ws.length>1 ? ws.filter((_,idx)=>idx!==i) : ws)
+
+  async function save() {
+    if (!recipeId) { setError('Wybierz recepturę / produkt'); return }
+    if (!wsady.length || wsady.some(w => !(parseFloat(w.planned_kg)>0))) { setError('Każdy wsad musi mieć masę > 0'); return }
+    if (bbs.some(b => b.over)) { setError('Bigbag może mieć maksymalnie 3 wsady'); return }
     setSaving(true); setError('')
-    const lot = await genLot()
-    const { data: pb, error: err } = await supabase.from('production_batches').insert({
-      lot_number: lot,
-      recipe_id: runRecipe.id,
-      quantity_kg: runMass,
-      operator: runForm.operator || null,
-      foreman: runForm.foreman || null,
-      notes: runForm.notes || null,
-      technologist: profile?.full_name || null,
-      client: runOrder.clients?.name || runRecipe.client || null,
-      created_by: profile?.id,
+    const seq = await peekNextSeq()
+    const year = new Date().getFullYear()
+    const prodNo = `PROD-${year}-${seq}`
+    const clientName = recipe?.client || (attached.length ? (salesNowe.find(o=>o.id===attached[0])?.clients?.name || null) : null)
+    const { data: pb, error: e1 } = await supabase.from('production_batches').insert({
+      lot_number: prodNo, recipe_id: recipeId, quantity_kg: parseFloat(totalPlanned.toFixed(3)),
+      client: clientName, prod_stage: 'planowana', notes: notes||null, created_by: profile?.id,
     }).select().single()
-    if (err) { setError(err.message); setSaving(false); return }
-    const items = fifo.flatMap(r => r.lots.map((l,li) => ({
-      production_batch_id: pb.id, ingredient_batch_id: l.ingredient_batch_id,
-      ingredient_id: r.ingredient_id, quantity_used_kg: l.kg, fifo_order: li+1,
-    })))
-    if (items.length) await supabase.from('production_batch_items').insert(items)
-    await supabase.from('orders').update({ status:'w_produkcji', production_batch_id: pb.id, updated_at:new Date().toISOString() }).eq('id', runOrder.id)
-    setSaving(false); setRunModal(false); loadAll()
+    if (e1) { setError(e1.message); setSaving(false); return }
+    const wsadyRows = wsady.map((w,i) => ({ production_batch_id: pb.id, wsad_no: i+1, planned_kg: parseFloat(w.planned_kg), bb_plan_no: parseInt(w.bb)||1 }))
+    const { error: e2 } = await supabase.from('production_wsady').insert(wsadyRows)
+    if (e2) { setError(e2.message); setSaving(false); return }
+    if (attached.length) {
+      await supabase.from('production_order_sales').insert(attached.map(id => {
+        const o = salesNowe.find(x=>x.id===id)
+        return { production_batch_id: pb.id, order_id: id, alloc_units: o?.qty_units||null, alloc_kg: o?.quantity_kg||null }
+      }))
+      await supabase.from('orders').update({ status:'zaplanowane', updated_at:new Date().toISOString() }).in('id', attached)
+    }
+    setSaving(false); setModal(false); setSelOrders([]); load()
   }
 
-  function printSheet() {
-    if (!runRecipe) return
-    const now = new Date()
-    const dateStr = now.toLocaleDateString('pl-PL'), timeStr = now.toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit'})
-    const allergenBlock = allergens.length>0
-      ? `<div class="allergen-box"><strong>⚠ ALERGENY:</strong> ${allergens.join(', ')}</div>`
-      : `<div class="no-allergen-box">✓ Brak alergenów w tej partii</div>`
-    const rows = fifo.map((r,idx) => {
-      const lotsText = r.lots.length ? r.lots.map((l,i) => `${l.lot}${r.lots.length>1?` (FIFO ${i+1}: ${l.kg} kg)`:''}`).join('<br>') : '<span style="color:#A32D2D">BRAK W MAGAZYNIE</span>'
-      return `<tr><td class="check-cell"><div class="checkbox"></div></td><td class="num">${idx+1}</td><td class="code">${r.ingredient?.code||''}</td><td>${r.ingredient?.name||''}</td><td class="kg"><strong>${r.needed.toFixed(3)}</strong></td><td class="lot-cell">${lotsText}</td><td class="allergy-cell">${r.ingredient?.has_allergen?`<span class="tag-allergy">${r.ingredient.allergen_type}</span>`:'—'}</td><td class="verify-cell"><div class="checkbox"></div></td></tr>`
-    }).join('')
-    const html = `<!DOCTYPE html><html lang="pl"><head><meta charset="UTF-8"><title>Zlecenie produkcji - ${runRecipe.code}</title>
-<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:11px;color:#000;padding:16px}
-.header{display:flex;justify-content:space-between;border-bottom:2px solid #0F6E56;padding-bottom:10px;margin-bottom:12px}
-.company{font-size:16px;font-weight:bold;color:#0F6E56}.doc-title{font-size:13px;font-weight:bold;margin-top:4px}
-.lot-badge{background:#E1F5EE;border:1px solid #1D9E75;border-radius:4px;padding:4px 10px;font-size:12px;font-weight:bold;color:#0F6E56;margin-top:4px;display:inline-block}
-.info-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px}
-.info-box{border:1px solid #D3D1C7;border-radius:4px;padding:6px 10px}.info-label{font-size:9px;color:#888;text-transform:uppercase;margin-bottom:2px}.info-value{font-size:12px;font-weight:bold}
-.section-title{font-size:11px;font-weight:bold;background:#0F6E56;color:#fff;padding:5px 10px}
-table{width:100%;border-collapse:collapse;margin-bottom:10px}th{background:#F1EFE8;font-size:9px;font-weight:bold;text-transform:uppercase;padding:5px 6px;border:1px solid #D3D1C7;text-align:left}
-td{padding:5px 6px;border:1px solid #D3D1C7;font-size:10px}tr:nth-child(even) td{background:#FAFAF8}
-.check-cell{width:24px;text-align:center}.checkbox{width:14px;height:14px;border:1.5px solid #333;border-radius:2px;margin:0 auto}
-.num{width:20px;text-align:center;color:#888}.code{width:70px;font-family:monospace}.kg{width:70px;text-align:right}.lot-cell{font-family:monospace;font-size:9px}.verify-cell{width:60px;text-align:center}.allergy-cell{width:70px}
-.tag-allergy{background:#FCEBEB;color:#791F1F;border:1px solid #F09595;border-radius:3px;padding:1px 5px;font-size:9px;font-weight:bold}
-.total-row td{background:#E1F5EE!important;font-weight:bold}
-.allergen-box{background:#FCEBEB;border:1.5px solid #E24B4A;border-radius:4px;padding:8px 12px;margin-bottom:10px;color:#501313}.no-allergen-box{background:#E1F5EE;border:1px solid #1D9E75;border-radius:4px;padding:6px 12px;margin-bottom:10px;color:#085041}
-.sign{margin-top:16px;border:1px solid #D3D1C7;border-radius:4px;padding:12px}.sign-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px}.sl{border-bottom:1px solid #333;margin-top:24px;margin-bottom:4px}.sn{font-size:9px;color:#888}
-@media print{body{padding:8px}@page{margin:10mm;size:A4}}</style></head><body>
-<div class="header"><div><div class="company">InstantMix Pro</div><div class="doc-title">Zlecenie produkcji / Checklista dozowania</div><div class="lot-badge">Nr partii nadany po uruchomieniu</div></div>
-<div style="text-align:right;font-size:10px;color:#555"><div>Data: <strong>${dateStr} ${timeStr}</strong></div><div>Zlecenie: <strong>${runOrder?.order_number||'—'}</strong></div><div>Wydrukował: <strong>${profile?.full_name||'—'}</strong></div></div></div>
-<div class="info-grid">
-<div class="info-box"><div class="info-label">Klient</div><div class="info-value">${runOrder?.clients?.name||'—'}</div></div>
-<div class="info-box"><div class="info-label">Wyrób (BOM)</div><div class="info-value">${runOrder?.bom?.code_ext||'—'}</div></div>
-<div class="info-box"><div class="info-label">Receptura</div><div class="info-value">${runRecipe.code} (v${runRecipe.version})</div></div>
-<div class="info-box"><div class="info-label">Ilość sztuk</div><div class="info-value">${runOrder?.qty_units||'—'}</div></div>
-<div class="info-box"><div class="info-label">Masa wsadu</div><div class="info-value">${runMass} kg</div></div>
-<div class="info-box"><div class="info-label">Linia</div><div class="info-value">${runRecipe.production_line==='bezglutenowa'?'BEZGLUTENOWA':'Zwykła'}</div></div></div>
-${allergenBlock}
-<div class="section-title">Lista składników do dozowania — FIFO</div>
-<table><thead><tr><th class="check-cell">Odważ.</th><th class="num">Lp.</th><th class="code">Kod</th><th>Nazwa składnika</th><th class="kg">Ilość (kg)</th><th>Partia (FIFO)</th><th class="allergy-cell">Alergen</th><th class="verify-cell">Weryf.</th></tr></thead><tbody>
-${rows}
-<tr class="total-row"><td></td><td></td><td colspan="2" style="text-align:right">SUMA WSADU:</td><td style="text-align:right">${fifo.reduce((s,r)=>s+r.needed,0).toFixed(3)} kg</td><td colspan="3"></td></tr>
-</tbody></table>
-<div class="sign"><div style="font-weight:bold;border-bottom:1px solid #D3D1C7;padding-bottom:6px;margin-bottom:12px">Potwierdzenie wykonania — podpisy</div>
-<div class="sign-grid"><div><div class="sn">OPERATOR / DOZUJĄCY</div><div class="sl"></div><div class="sn">Imię, nazwisko, podpis · data</div></div><div><div class="sn">BRYGADZISTA (WERYFIKACJA)</div><div class="sl"></div><div class="sn">Imię, nazwisko, podpis · data</div></div><div><div class="sn">TECHNOLOG</div><div class="sl"></div><div class="sn">Imię, nazwisko, podpis · data</div></div></div></div>
-<script>window.onload=function(){window.print()}</script></body></html>`
-    const win = window.open('','_blank'); win.document.write(html); win.document.close()
+  async function delProd(po) {
+    if (po.prod_stage!=='planowana') return
+    // odczep zlecenia sprzedaży (wróć do nowe)
+    const orderIds = (po.production_order_sales||[]).map(x=>x.order_id)
+    if (orderIds.length) await supabase.from('orders').update({ status:'nowe' }).in('id', orderIds)
+    await supabase.from('production_batches').delete().eq('id', po.id)
+    load()
   }
 
-  const pf = (k,v) => setPlanForm(p => ({ ...p, [k]:v }))
-  const rf = (k,v) => setRunForm(p => ({ ...p, [k]:v }))
-  const fmt = v => parseFloat(v||0).toLocaleString('pl-PL')
+  function bbCountOf(po) {
+    const set = new Set((po.production_wsady||[]).map(w => w.bb_plan_no||1)); return set.size
+  }
 
   return (
     <div>
       <div className="page-header">
-        <div><div className="page-title">Planowanie zleceń</div><div className="page-sub">Kolejka produkcji — od zamówienia do uruchomienia partii (FIFO)</div></div>
-        <button className="btn btn-sm" onClick={loadAll}>↻</button>
-      </div>
-      {error && <div className="err-box" style={{ marginBottom:12 }}>{error}</div>}
-
-      <div style={{ fontSize:13, fontWeight:600, color:'#BA7517', margin:'4px 0 8px' }}>Do zaplanowania ({nowe.length})</div>
-      <div style={{ background:'#fff', border:'0.5px solid #D3D1C7', borderRadius:8, overflowX:'auto', marginBottom:18 }}>
-        <table style={{ minWidth:820 }}>
-          <thead><tr><th>Nr zlecenia</th><th>Klient</th><th>Wyrób</th><th style={{textAlign:'right'}}>Ilość szt.</th><th style={{textAlign:'right'}}>Waga</th><th>Wysyłka</th><th></th></tr></thead>
-          <tbody>
-            {loading && <tr><td colSpan={7} style={{textAlign:'center',padding:24,color:'#888'}}>Ładowanie...</td></tr>}
-            {!loading && nowe.length===0 && <tr><td colSpan={7} style={{textAlign:'center',padding:24,color:'#888'}}>Brak nowych zleceń</td></tr>}
-            {!loading && nowe.map(o => (
-              <tr key={o.id}>
-                <td><span className="lot">{o.order_number||'—'}</span></td>
-                <td style={{fontSize:12}}>{klient(o)}</td>
-                <td style={{fontWeight:500,fontSize:12}}>{wyrob(o)}</td>
-                <td style={{textAlign:'right'}}>{fmt(o.qty_units)}</td>
-                <td style={{textAlign:'right',fontWeight:600}}>{fmt(massOf(o))} kg</td>
-                <td className="muted" style={{fontSize:11}}>{o.ship_date||'—'}</td>
-                <td>{canEdit && <button className="btn btn-sm btn-primary" onClick={() => openPlan(o)}>Zaplanuj</button>}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div style={{ fontSize:13, fontWeight:600, color:'#0F6E56', margin:'4px 0 8px' }}>Kolejka produkcji ({kolejka.length})</div>
-      <div style={{ background:'#fff', border:'0.5px solid #D3D1C7', borderRadius:8, overflowX:'auto' }}>
-        <table style={{ minWidth:900 }}>
-          <thead><tr><th style={{textAlign:'center'}}>#</th><th>Nr zlecenia</th><th>Klient</th><th>Wyrób</th><th style={{textAlign:'right'}}>Ilość szt.</th><th style={{textAlign:'right'}}>Waga</th><th>Data prod.</th><th></th></tr></thead>
-          <tbody>
-            {loading && <tr><td colSpan={8} style={{textAlign:'center',padding:24,color:'#888'}}>Ładowanie...</td></tr>}
-            {!loading && kolejka.length===0 && <tr><td colSpan={8} style={{textAlign:'center',padding:24,color:'#888'}}>Kolejka pusta</td></tr>}
-            {!loading && kolejka.map(o => (
-              <tr key={o.id}>
-                <td style={{textAlign:'center',fontWeight:700,color:'#5F5E5A'}}>{o.production_priority||'—'}</td>
-                <td><span className="lot">{o.order_number||'—'}</span></td>
-                <td style={{fontSize:12}}>{klient(o)}</td>
-                <td style={{fontWeight:500,fontSize:12}}>{wyrob(o)}</td>
-                <td style={{textAlign:'right'}}>{fmt(o.qty_units)}</td>
-                <td style={{textAlign:'right',fontWeight:600}}>{fmt(massOf(o))} kg</td>
-                <td className="muted" style={{fontSize:11}}>{o.planned_date||'—'}</td>
-                <td><div className="flex" style={{gap:4}}>
-                  {canEdit && <button className="btn btn-sm btn-primary" onClick={() => openRun(o)}>Uruchom produkcję</button>}
-                  {canEdit && <button className="btn btn-sm" onClick={() => openPlan(o)}>Edytuj</button>}
-                  {canEdit && <button className="btn btn-sm" onClick={() => unplan(o)}>Cofnij</button>}
-                </div></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Modal planowania */}
-      <div className={`modal-overlay ${planModal?'open':''}`} onClick={e => e.target===e.currentTarget && setPlanModal(false)}>
-        <div className="modal" style={{ maxWidth:480 }}>
-          <div className="modal-title">Zaplanuj zlecenie {planOrder?.order_number||''}</div>
-          {error && <div className="err-box">{error}</div>}
-          <div className="fr">
-            <div><label>Data produkcji</label><input type="date" value={planForm.planned_date} onChange={e => pf('planned_date',e.target.value)} /></div>
-            <div><label>Kolejność / priorytet</label><input type="number" min="1" step="1" value={planForm.production_priority} onChange={e => pf('production_priority',e.target.value)} /></div>
-          </div>
-          <div><label>Uwagi do produkcji</label><input value={planForm.planning_notes} onChange={e => pf('planning_notes',e.target.value)} placeholder="opcjonalne" /></div>
-          <div className="modal-footer">
-            <button className="btn" onClick={() => setPlanModal(false)}>Anuluj</button>
-            <button className="btn btn-primary" onClick={savePlan} disabled={saving}>{saving?'Zapisywanie...':'Zaplanuj'}</button>
-          </div>
+        <div><div className="page-title">Planowanie zleceń</div><div className="page-sub">Zlecenia produkcji — wsady, bigbagi, przypięcie zleceń sprzedaży</div></div>
+        <div className="flex" style={{ gap:8 }}>
+          {canEdit && <button className="btn btn-sm" onClick={openStock}>+ Produkcja na magazyn</button>}
+          <button className="btn btn-sm" onClick={load}>↻</button>
         </div>
       </div>
 
-      {/* Modal uruchomienia produkcji */}
-      <div className={`modal-overlay ${runModal?'open':''}`} onClick={e => e.target===e.currentTarget && setRunModal(false)}>
-        <div className="modal" style={{ maxWidth:720 }}>
-          <div className="modal-title">Uruchom produkcję — {runOrder?.order_number||''}</div>
-          {runRecipe && <div style={{ background:'#F1EFE8', borderRadius:8, padding:10, marginBottom:10, fontSize:13 }}>
-            <b>{runOrder?.clients?.name}</b> · {wyrob(runOrder||{})} · receptura {runRecipe.code} (v{runRecipe.version}) · masa wsadu <b>{runMass} kg</b>
-          </div>}
-          {error && <div className="err-box">{error}</div>}
-          {hasShortage && <div className="warn-box">Uwaga: brak części surowców w magazynie. Możesz mimo to uruchomić produkcję (ERP) — brakujące pozycje oznaczone na czerwono.</div>}
+      {/* Do zaplanowania */}
+      <div style={{ fontSize:13, fontWeight:600, color:'#BA7517', margin:'4px 0 8px' }}>Zlecenia sprzedaży do zaplanowania ({salesNowe.length})</div>
+      <div style={{ background:'#fff', border:'0.5px solid #D3D1C7', borderRadius:8, overflowX:'auto', marginBottom:8 }}>
+        <table style={{ minWidth:760 }}>
+          <thead><tr><th style={{width:36}}></th><th>Nr zlecenia</th><th>Klient</th><th>Wyrób (BOM)</th><th style={{textAlign:'right'}}>Ilość szt.</th><th style={{textAlign:'right'}}>Waga</th></tr></thead>
+          <tbody>
+            {loading && <tr><td colSpan={6} style={{textAlign:'center',padding:20,color:'#888'}}>Ładowanie...</td></tr>}
+            {!loading && salesNowe.length===0 && <tr><td colSpan={6} style={{textAlign:'center',padding:20,color:'#888'}}>Brak nowych zleceń</td></tr>}
+            {!loading && salesNowe.map(o => {
+              const disabled = selOrders.length>0 && recipeOf(o)!==selRecipe && !selOrders.includes(o.id)
+              return (
+                <tr key={o.id} style={{ opacity: disabled?0.4:1 }}>
+                  <td style={{textAlign:'center'}}><input type="checkbox" checked={selOrders.includes(o.id)} disabled={disabled} onChange={() => toggleSel(o)} /></td>
+                  <td><span className="lot">{o.order_number||'—'}</span></td>
+                  <td style={{fontSize:12}}>{klient(o)}</td>
+                  <td style={{fontWeight:500,fontSize:12}}>{o.bom?.code_ext||'—'}</td>
+                  <td style={{textAlign:'right'}}>{fmt(o.qty_units)}</td>
+                  <td style={{textAlign:'right',fontWeight:600}}>{fmt(o.quantity_kg)} kg</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div className="flex" style={{ justifyContent:'space-between', marginBottom:18, alignItems:'center' }}>
+        <div className="muted" style={{ fontSize:12 }}>{selOrders.length>0 ? `Wybrano ${selOrders.length} zlec. (jedna receptura)` : 'Zaznacz zlecenia tej samej receptury, aby zaplanować razem.'}</div>
+        {canEdit && <button className="btn btn-primary btn-sm" onClick={openFromSales} disabled={!selOrders.length}>Zaplanuj produkcję z wybranych →</button>}
+      </div>
 
-          <div style={{ maxHeight:280, overflowY:'auto', border:'0.5px solid #E3E1D8', borderRadius:6, marginBottom:10 }}>
-            <table style={{ minWidth:560 }}>
-              <thead style={{ position:'sticky', top:0, background:'#fff' }}><tr><th>Składnik</th><th style={{textAlign:'right'}}>Potrzeba</th><th>Partie FIFO</th></tr></thead>
+      {/* Zlecenia produkcji */}
+      <div style={{ fontSize:13, fontWeight:600, color:'#0F6E56', margin:'4px 0 8px' }}>Zlecenia produkcji ({prodOrders.length})</div>
+      <div style={{ background:'#fff', border:'0.5px solid #D3D1C7', borderRadius:8, overflowX:'auto' }}>
+        <table style={{ minWidth:880 }}>
+          <thead><tr><th style={{width:32}}></th><th>Nr produkcji</th><th>Produkt</th><th style={{textAlign:'center'}}>Wsady</th><th style={{textAlign:'center'}}>Bigbagi</th><th style={{textAlign:'right'}}>Masa plan.</th><th>Sprzedaż</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            {!loading && prodOrders.length===0 && <tr><td colSpan={9} style={{textAlign:'center',padding:20,color:'#888'}}>Brak zleceń produkcji</td></tr>}
+            {prodOrders.map(po => (
+              <React.Fragment key={po.id}>
+                <tr>
+                  <td style={{textAlign:'center'}}><button onClick={()=>setExpanded(expanded===po.id?null:po.id)} style={{background:'none',border:'none',cursor:'pointer',color:'#5F5E5A'}}>{expanded===po.id?'▲':'▼'}</button></td>
+                  <td><span className="lot">{po.lot_number}</span></td>
+                  <td style={{fontSize:12,fontWeight:500}}>{po.recipes?.code} — {po.recipes?.name}</td>
+                  <td style={{textAlign:'center'}}>{po.production_wsady?.length||0}</td>
+                  <td style={{textAlign:'center'}}>{bbCountOf(po)}</td>
+                  <td style={{textAlign:'right',fontWeight:600}}>{fmt(po.quantity_kg)} kg</td>
+                  <td style={{fontSize:11}}>{(po.production_order_sales||[]).length ? (po.production_order_sales||[]).map(x=>x.orders?.order_number).join(', ') : <span className="muted">na magazyn</span>}</td>
+                  <td><span className={`badge ${po.prod_stage==='wyprodukowana'?'b-ok':po.prod_stage==='anulowana'?'b-err':'b-warn'}`} style={{fontSize:10}}>{STAGE[po.prod_stage]||po.prod_stage}</span></td>
+                  <td>{canEdit && po.prod_stage==='planowana' && <button className="btn btn-sm btn-danger" onClick={()=>delProd(po)}>Usuń</button>}</td>
+                </tr>
+                {expanded===po.id && (
+                  <tr><td colSpan={9} style={{padding:0,background:'#F9F8F5'}}>
+                    <div style={{padding:'10px 16px 12px 40px'}}>
+                      <div style={{fontSize:12,fontWeight:600,color:'#0F6E56',marginBottom:6}}>Wsady i bigbagi</div>
+                      {(() => {
+                        const seq = (po.lot_number.split('-')[2]||'')
+                        const groups={}; (po.production_wsady||[]).forEach(w=>{const b=w.bb_plan_no||1;(groups[b]=groups[b]||[]).push(w)})
+                        return Object.keys(groups).map(Number).sort((a,b)=>a-b).map(bb=>{
+                          const list=groups[bb].sort((a,b)=>a.wsad_no-b.wsad_no)
+                          const code=`${po.recipes?.code}/${seq}/${list.map(w=>'W'+w.wsad_no).join('/')}/BB${String(bb).padStart(2,'0')}`
+                          return <div key={bb} style={{marginBottom:6,fontSize:12}}>
+                            <span className="lot" style={{fontSize:11}}>{code}</span>
+                            <span className="muted" style={{marginLeft:8}}>{list.map(w=>`W${w.wsad_no}: ${fmt(w.planned_kg)} kg`).join(' · ')} → razem {fmt(list.reduce((s,w)=>s+parseFloat(w.planned_kg||0),0))} kg</span>
+                          </div>
+                        })
+                      })()}
+                    </div>
+                  </td></tr>
+                )}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Modal nowego zlecenia produkcji */}
+      <div className={`modal-overlay ${modal?'open':''}`} onClick={e => e.target===e.currentTarget && setModal(false)}>
+        <div className="modal" style={{ maxWidth:760 }}>
+          <div className="modal-title">Nowe zlecenie produkcji — PROD-{new Date().getFullYear()}-{nextSeq}</div>
+          {error && <div className="err-box">{error}</div>}
+
+          <div className="fr">
+            <div style={{flex:2}}><label>Receptura / produkt *</label>
+              <select value={recipeId} onChange={e => setRecipeId(e.target.value)} disabled={attached.length>0}>
+                <option value="">— wybierz —</option>
+                {recipes.map(r => <option key={r.id} value={r.id}>{r.code} — {r.name} (v{r.version})</option>)}
+              </select>
+            </div>
+            <div><label>Przypięte zlecenia</label><input value={attached.length ? attached.map(id=>salesNowe.find(o=>o.id===id)?.order_number).join(', ') : 'na magazyn'} disabled /></div>
+          </div>
+
+          <div style={{ marginTop:8 }}>
+            <div className="flex" style={{ justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+              <label style={{ margin:0 }}>Wsady (masa + do którego bigbaga)</label>
+              <button className="btn btn-sm" onClick={addW}>+ Wsad</button>
+            </div>
+            <table style={{ width:'100%' }}>
+              <thead><tr><th style={{width:50}}>Wsad</th><th style={{textAlign:'right'}}>Masa (kg)</th><th style={{width:110,textAlign:'center'}}>Bigbag nr</th><th style={{width:40}}></th></tr></thead>
               <tbody>
-                {fifo.map((r,i) => (
+                {wsady.map((w,i) => (
                   <tr key={i}>
-                    <td style={{fontSize:12}}>{r.ingredient?.code} — {r.ingredient?.name}{r.ingredient?.has_allergen && <span className="badge b-err" style={{fontSize:9,marginLeft:4}}>{r.ingredient.allergen_type}</span>}</td>
-                    <td style={{textAlign:'right',fontWeight:600}}>{r.needed.toFixed(3)} kg</td>
-                    <td style={{fontSize:11,fontFamily:'monospace'}}>
-                      {r.lots.length ? r.lots.map((l,li) => <div key={li}>{l.lot} · {l.kg} kg</div>) : <span style={{color:'#A32D2D'}}>BRAK {r.shortage.toFixed(3)} kg</span>}
-                      {r.lots.length>0 && r.shortage>0 && <div style={{color:'#A32D2D'}}>brakuje {r.shortage.toFixed(3)} kg</div>}
-                    </td>
+                    <td style={{fontWeight:600}}>W{i+1}</td>
+                    <td style={{textAlign:'right'}}><input type="number" step="0.001" min="0" value={w.planned_kg} onChange={e=>setW(i,'planned_kg',e.target.value)} style={{width:120,textAlign:'right'}} /></td>
+                    <td style={{textAlign:'center'}}><input type="number" step="1" min="1" value={w.bb} onChange={e=>setW(i,'bb',e.target.value)} style={{width:70,textAlign:'center'}} /></td>
+                    <td style={{textAlign:'center'}}>{wsady.length>1 && <button className="btn btn-sm btn-danger" style={{padding:'2px 7px'}} onClick={()=>delW(i)}>×</button>}</td>
                   </tr>
                 ))}
+                <tr style={{background:'#F1EFE8'}}><td style={{fontWeight:600,textAlign:'right'}} colSpan={1}>Razem</td><td style={{textAlign:'right',fontWeight:700}}>{fmt(totalPlanned)} kg</td><td colSpan={2}></td></tr>
               </tbody>
             </table>
           </div>
 
-          <div className="fr">
-            <div><label>Operator</label><input value={runForm.operator} onChange={e => rf('operator',e.target.value)} /></div>
-            <div><label>Brygadzista</label><input value={runForm.foreman} onChange={e => rf('foreman',e.target.value)} /></div>
+          <div style={{ marginTop:10 }}>
+            <label>Bigbagi (podgląd kodów)</label>
+            <div style={{ background:'#F9F8F5', borderRadius:6, padding:8 }}>
+              {bbs.length===0 && <div className="muted" style={{fontSize:12}}>Dodaj wsady.</div>}
+              {bbs.map(b => (
+                <div key={b.bb} style={{ fontSize:12, marginBottom:4, color: b.over?'#A32D2D':undefined }}>
+                  <span className="lot" style={{fontSize:11}}>{b.code}</span>
+                  <span className="muted" style={{marginLeft:8}}>{b.list.map(w=>'W'+w.wsad_no).join('+')} · {fmt(b.kg)} kg</span>
+                  {b.over && <span style={{marginLeft:8,fontWeight:600}}>⚠ max 3 wsady</span>}
+                </div>
+              ))}
+            </div>
           </div>
-          <div><label>Uwagi</label><input value={runForm.notes} onChange={e => rf('notes',e.target.value)} placeholder="opcjonalne" /></div>
+
+          <div style={{ marginTop:8 }}><label>Uwagi</label><input value={notes} onChange={e=>setNotes(e.target.value)} placeholder="opcjonalne" /></div>
 
           <div className="modal-footer">
-            <button className="btn" onClick={() => setRunModal(false)}>Anuluj</button>
-            <button className="btn" onClick={printSheet}>🖨 Wydruk zlecenia</button>
-            <button className="btn btn-primary" onClick={startProduction} disabled={saving}>{saving?'Tworzenie partii...':'Utwórz partię i rozpocznij'}</button>
+            <button className="btn" onClick={() => setModal(false)}>Anuluj</button>
+            <button className="btn btn-primary" onClick={save} disabled={saving}>{saving?'Zapisywanie...':'Utwórz zlecenie produkcji'}</button>
           </div>
         </div>
       </div>
