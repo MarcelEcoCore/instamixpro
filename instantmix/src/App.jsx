@@ -6,6 +6,7 @@ import Receptury from './pages/Receptury'
 import Skladniki from './pages/Skladniki'
 import PrzyjecieDostawy from './pages/PrzyjecieDostawy'
 import Kalkulator from './pages/Kalkulator'
+import Planowanie from './pages/Planowanie'
 import Produkcja from './pages/Produkcja'
 import Pakowanie from './pages/Pakowanie'
 import Inwentura from './pages/Inwentura'
@@ -38,6 +39,7 @@ const COMPONENTS = {
   receptury: Receptury,
   partie: PrzyjecieDostawy,
   kalkulator: Kalkulator,
+  planowanie: Planowanie,
   produkcja: Produkcja,
   pakowanie: Pakowanie,
   inwentura: Inwentura,
