@@ -23,6 +23,7 @@ export default function Bom() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [filterStatus, setFilterStatus] = useState('aktywne')
+  const [filterClient, setFilterClient] = useState('')
 
   const [modal, setModal] = useState(false)
   const [editMode, setEditMode] = useState(false)
@@ -62,7 +63,20 @@ export default function Bom() {
     const q = search.toLowerCase()
     const matchQ = !q || (b.code_ext||'').toLowerCase().includes(q) || (b.clients?.name||'').toLowerCase().includes(q) || (b.recipes?.name||'').toLowerCase().includes(q)
     const matchStatus = filterStatus==='wszystkie' ? true : filterStatus==='aktywne' ? b.status==='aktywny' : b.status==='wycofany'
-    return matchQ && matchStatus
+    const matchClient = !filterClient || b.client_id === filterClient
+    return matchQ && matchStatus && matchClient
+  })
+
+  // sortowanie: najpierw po NUMERZE KLIENTA, potem po KODZIE BOM; bez numeru klienta → na dół (jak w Recepturach)
+  const clientNumById = {}
+  clients.forEach(c => { clientNumById[c.id] = (c.number != null && c.number !== '') ? parseInt(c.number) : null })
+  const sorted = [...filtered].sort((a, b) => {
+    const na = a.client_id ? clientNumById[a.client_id] : null
+    const nb = b.client_id ? clientNumById[b.client_id] : null
+    if (na == null && nb != null) return 1
+    if (na != null && nb == null) return -1
+    if (na != null && nb != null && na !== nb) return na - nb
+    return (a.code_ext||'').localeCompare(b.code_ext||'')
   })
 
   // receptury danego klienta (lub bez przypisanego klienta)
@@ -155,13 +169,17 @@ export default function Bom() {
 
       {loadError && <div className="err-box" style={{ marginBottom:10 }}>Błąd ładowania danych: {loadError}</div>}
 
-      <div className="flex" style={{ marginBottom:10, gap:6 }}>
+      <div className="flex" style={{ marginBottom:10, gap:6, alignItems:'center', flexWrap:'wrap' }}>
         {[['aktywne','Aktywne'],['wycofane','Wycofane'],['wszystkie','Wszystkie']].map(([val,label]) => (
           <button key={val} className="btn btn-sm" onClick={() => setFilterStatus(val)}
             style={{ background:filterStatus===val?'#1D9E75':undefined, color:filterStatus===val?'#fff':undefined, borderColor:filterStatus===val?'#1D9E75':undefined }}>
             {label}
           </button>
         ))}
+        <select value={filterClient} onChange={e => setFilterClient(e.target.value)} style={{ marginLeft:8, width:220 }}>
+          <option value="">— wszyscy klienci —</option>
+          {clients.map(c => <option key={c.id} value={c.id}>{(c.number ? c.number+' — ' : '')+c.name}</option>)}
+        </select>
       </div>
 
       <div style={{ background:'#fff', border:'0.5px solid #D3D1C7', borderRadius:8, overflowX:'auto' }}>
@@ -176,8 +194,8 @@ export default function Bom() {
           </tr></thead>
           <tbody>
             {loading && <tr><td colSpan={10} style={{ textAlign:'center', padding:24, color:'#888' }}>Ładowanie...</td></tr>}
-            {!loading && filtered.length===0 && <tr><td colSpan={10} style={{ textAlign:'center', padding:24, color:'#888' }}>Brak BOM-ów</td></tr>}
-            {!loading && filtered.map(b => (
+            {!loading && sorted.length===0 && <tr><td colSpan={10} style={{ textAlign:'center', padding:24, color:'#888' }}>Brak BOM-ów</td></tr>}
+            {!loading && sorted.map(b => (
               <tr key={b.id} style={{ opacity: b.status==='wycofany'?0.6:1 }}>
                 <td><span className="lot">{b.code_ext||'—'}</span></td>
                 <td style={{ fontSize:13 }}>{b.clients ? (b.clients.number ? b.clients.number+' — ' : '')+b.clients.name : '—'}</td>
