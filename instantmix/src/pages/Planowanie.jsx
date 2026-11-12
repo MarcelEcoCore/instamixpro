@@ -22,6 +22,7 @@ export default function Planowanie() {
   const [recipeId, setRecipeId] = useState('')
   const [attached, setAttached] = useState([])        // order ids
   const [wsady, setWsady] = useState([{ planned_kg:'', bb:'1' }])
+  const [bbCount, setBbCount] = useState('1')
   const [notes, setNotes] = useState('')
   const [nextSeq, setNextSeq] = useState('NNNN')
   const [saving, setSaving] = useState(false)
@@ -66,42 +67,50 @@ export default function Planowanie() {
     const seq = await peekNextSeq()
     const totalKg = selOrders.reduce((s,id)=>{ const o=salesNowe.find(x=>x.id===id); return s+parseFloat(o?.quantity_kg||0) },0)
     setRecipeId(r||''); setAttached([...selOrders]); setNextSeq(seq)
-    setWsady([{ planned_kg: totalKg>0?String(parseFloat(totalKg.toFixed(3))):'', bb:'1' }])
+    setWsady([{ planned_kg: totalKg>0?String(parseFloat(totalKg.toFixed(3))):'', bb:'1' }]); setBbCount('1')
     setNotes(''); setError(''); setModal(true)
   }
   async function openStock() {
     const seq = await peekNextSeq()
     setRecipeId(''); setAttached([]); setNextSeq(seq)
-    setWsady([{ planned_kg:'', bb:'1' }]); setNotes(''); setError(''); setModal(true)
+    setWsady([{ planned_kg:'', bb:'1' }]); setBbCount('1'); setNotes(''); setError(''); setModal(true)
   }
 
   const recipe = recipes.find(r => r.id === recipeId)
 
-  // bigbagi z planu wsadów
+  const nBB = Math.max(1, parseInt(bbCount)||1)
+
+  // bigbagi z planu wsadów — pokazuje wszystkie zadeklarowane BB (1..nBB)
   function bigbagsPreview() {
     const groups = {}
+    for (let b=1; b<=nBB; b++) groups[b] = []
     wsady.forEach((w, i) => {
-      const bb = parseInt(w.bb)||1
-      if (!groups[bb]) groups[bb] = []
+      const bb = Math.min(nBB, Math.max(1, parseInt(w.bb)||1))
       groups[bb].push({ wsad_no:i+1, kg:parseFloat(w.planned_kg||0) })
     })
     return Object.keys(groups).map(Number).sort((a,b)=>a-b).map(bb => {
       const list = groups[bb]
-      const code = recipe ? `${recipe.code}/${nextSeq}/${list.map(w=>'W'+w.wsad_no).join('/')}/BB${String(bb).padStart(2,'0')}` : '—'
-      return { bb, list, kg: list.reduce((s,w)=>s+w.kg,0), code, over: list.length>3 }
+      const code = recipe ? `${recipe.code}/${nextSeq}/${list.length?list.map(w=>'W'+w.wsad_no).join('/'):'—'}/BB${String(bb).padStart(2,'0')}` : '—'
+      return { bb, list, kg: list.reduce((s,w)=>s+w.kg,0), code, over: list.length>3, empty: list.length===0 }
     })
   }
   const bbs = bigbagsPreview()
   const totalPlanned = wsady.reduce((s,w)=>s+parseFloat(w.planned_kg||0),0)
 
   const setW = (i,k,v) => setWsady(ws => ws.map((w,idx)=> idx===i?{...w,[k]:v}:w))
-  const addW = () => setWsady(ws => [...ws, { planned_kg:'', bb:String((Math.max(0,...ws.map(x=>parseInt(x.bb)||1)))) }])
+  const addW = () => setWsady(ws => [...ws, { planned_kg:'', bb:'1' }])
   const delW = i => setWsady(ws => ws.length>1 ? ws.filter((_,idx)=>idx!==i) : ws)
+  function onBbCount(v) {
+    setBbCount(v)
+    const n = Math.max(1, parseInt(v)||1)
+    setWsady(ws => ws.map(w => (parseInt(w.bb)||1) > n ? { ...w, bb:String(n) } : w))
+  }
 
   async function save() {
     if (!recipeId) { setError('Wybierz recepturę / produkt'); return }
     if (!wsady.length || wsady.some(w => !(parseFloat(w.planned_kg)>0))) { setError('Każdy wsad musi mieć masę > 0'); return }
     if (bbs.some(b => b.over)) { setError('Bigbag może mieć maksymalnie 3 wsady'); return }
+    if (bbs.some(b => b.empty)) { setError('Każdy bigbag musi mieć co najmniej 1 wsad (albo zmniejsz liczbę bigbagów)'); return }
     setSaving(true); setError('')
     const seq = await peekNextSeq()
     const year = new Date().getFullYear()
@@ -240,17 +249,25 @@ export default function Planowanie() {
 
           <div style={{ marginTop:8 }}>
             <div className="flex" style={{ justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
-              <label style={{ margin:0 }}>Wsady (masa + do którego bigbaga)</label>
-              <button className="btn btn-sm" onClick={addW}>+ Wsad</button>
+              <label style={{ margin:0 }}>Wsady (masa + przypisanie do bigbaga)</label>
+              <div className="flex" style={{ gap:10, alignItems:'center' }}>
+                <span style={{ fontSize:12, color:'#5F5E5A' }}>Liczba bigbagów:</span>
+                <input type="number" min="1" step="1" value={bbCount} onChange={e=>onBbCount(e.target.value)} style={{ width:60, textAlign:'center' }} />
+                <button className="btn btn-sm" onClick={addW}>+ Wsad</button>
+              </div>
             </div>
             <table style={{ width:'100%' }}>
-              <thead><tr><th style={{width:50}}>Wsad</th><th style={{textAlign:'right'}}>Masa (kg)</th><th style={{width:110,textAlign:'center'}}>Bigbag nr</th><th style={{width:40}}></th></tr></thead>
+              <thead><tr><th style={{width:50}}>Wsad</th><th style={{textAlign:'right'}}>Masa (kg)</th><th style={{width:120,textAlign:'center'}}>Bigbag</th><th style={{width:40}}></th></tr></thead>
               <tbody>
                 {wsady.map((w,i) => (
                   <tr key={i}>
                     <td style={{fontWeight:600}}>W{i+1}</td>
                     <td style={{textAlign:'right'}}><input type="number" step="0.001" min="0" value={w.planned_kg} onChange={e=>setW(i,'planned_kg',e.target.value)} style={{width:120,textAlign:'right'}} /></td>
-                    <td style={{textAlign:'center'}}><input type="number" step="1" min="1" value={w.bb} onChange={e=>setW(i,'bb',e.target.value)} style={{width:70,textAlign:'center'}} /></td>
+                    <td style={{textAlign:'center'}}>
+                      <select value={w.bb} onChange={e=>setW(i,'bb',e.target.value)} style={{width:90}}>
+                        {Array.from({length:nBB},(_,k)=>k+1).map(n => <option key={n} value={String(n)}>BB{String(n).padStart(2,'0')}</option>)}
+                      </select>
+                    </td>
                     <td style={{textAlign:'center'}}>{wsady.length>1 && <button className="btn btn-sm btn-danger" style={{padding:'2px 7px'}} onClick={()=>delW(i)}>×</button>}</td>
                   </tr>
                 ))}
@@ -264,10 +281,11 @@ export default function Planowanie() {
             <div style={{ background:'#F9F8F5', borderRadius:6, padding:8 }}>
               {bbs.length===0 && <div className="muted" style={{fontSize:12}}>Dodaj wsady.</div>}
               {bbs.map(b => (
-                <div key={b.bb} style={{ fontSize:12, marginBottom:4, color: b.over?'#A32D2D':undefined }}>
+                <div key={b.bb} style={{ fontSize:12, marginBottom:4, color: (b.over||b.empty)?'#A32D2D':undefined }}>
                   <span className="lot" style={{fontSize:11}}>{b.code}</span>
-                  <span className="muted" style={{marginLeft:8}}>{b.list.map(w=>'W'+w.wsad_no).join('+')} · {fmt(b.kg)} kg</span>
-                  {b.over && <span style={{marginLeft:8,fontWeight:600}}>⚠ max 3 wsady</span>}
+                  {b.empty
+                    ? <span style={{marginLeft:8,fontWeight:600}}>⚠ pusty — przypisz wsad lub zmniejsz liczbę bigbagów</span>
+                    : <span className="muted" style={{marginLeft:8}}>{b.list.map(w=>'W'+w.wsad_no).join('+')} · {fmt(b.kg)} kg{b.over && <b style={{color:'#A32D2D'}}> ⚠ max 3 wsady</b>}</span>}
                 </div>
               ))}
             </div>
