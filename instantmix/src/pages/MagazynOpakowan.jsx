@@ -3,10 +3,8 @@ import { supabase } from '../lib/supabase'
 import { useAuth } from '../App'
 
 const TYPES = ['worek','paleta','folia','etykieta','inne']
-const UNITS = ['szt.','kg','m','rolka']
 const CORR_LABELS = { korekta_inwentury:'Korekta inwentury', ubytek_uszkodzenie:'Ubytek / uszkodzenie', zwrot_do_dostawcy:'Zwrot do dostawcy', inne:'Inne' }
 
-const EMPTY_MAT = { code:'', name:'', type:'worek', unit:'szt.', segment_code:'', min_stock:'', notes:'' }
 const EMPTY_CORR = { packaging_batch_id:'', correction_type:'korekta_inwentury', delta_qty:'', reason:'', event_date:new Date().toISOString().slice(0,10) }
 
 export default function MagazynOpakowan() {
@@ -22,14 +20,10 @@ export default function MagazynOpakowan() {
   const [expandedId, setExpandedId] = useState(null)
   const [editingMin, setEditingMin] = useState({})
 
-  const [matModal, setMatModal] = useState(false)
-  const [matEdit, setMatEdit] = useState(false)
-  const [matForm, setMatForm] = useState(EMPTY_MAT)
   const [corrModal, setCorrModal] = useState(false)
   const [corrForm, setCorrForm] = useState(EMPTY_CORR)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [confirmDelete, setConfirmDelete] = useState(null)
 
   useEffect(() => { load() }, [])
 
@@ -44,7 +38,6 @@ export default function MagazynOpakowan() {
     setLoading(false)
   }
 
-  const mf = (k,v) => setMatForm(p => ({ ...p, [k]: v }))
   const cf = (k,v) => setCorrForm(p => ({ ...p, [k]: v }))
 
   function batchesForMat(id) { return batches.filter(b => b.packaging_material_id === id) }
@@ -72,24 +65,6 @@ export default function MagazynOpakowan() {
   })
 
   const totalValue = filtered.reduce((s,r) => s + r.value, 0)
-
-  // ── Katalog materiału ──
-  function openNewMat() { setMatForm(EMPTY_MAT); setMatEdit(false); setError(''); setMatModal(true) }
-  function openEditMat(m) { setMatForm({ id:m.id, code:m.code, name:m.name, type:m.type||'worek', unit:m.unit||'szt.', segment_code:m.segment_code||'', min_stock:m.min_stock??'', notes:m.notes||'' }); setMatEdit(true); setError(''); setMatModal(true) }
-  async function saveMat() {
-    if (!matForm.code.trim() || !matForm.name.trim()) { setError('Kod i nazwa są wymagane'); return }
-    setSaving(true); setError('')
-    const payload = { code:matForm.code.trim(), name:matForm.name.trim(), type:matForm.type, unit:matForm.unit, segment_code: matForm.segment_code? matForm.segment_code.trim().toUpperCase() : null, min_stock: matForm.min_stock===''?0:parseFloat(matForm.min_stock), notes:matForm.notes||null }
-    if (matEdit) {
-      const { error: err } = await supabase.from('packaging_materials').update({ ...payload, updated_at:new Date().toISOString() }).eq('id', matForm.id)
-      if (err) { setError(err.message); setSaving(false); return }
-    } else {
-      const { error: err } = await supabase.from('packaging_materials').insert({ ...payload, active:true, created_by:profile?.id })
-      if (err) { setError(err.message); setSaving(false); return }
-    }
-    setSaving(false); setMatModal(false); load()
-  }
-  async function deleteMat(m) { await supabase.from('packaging_materials').delete().eq('id', m.id); setConfirmDelete(null); load() }
 
   async function saveMinimum(id, value) {
     await supabase.from('packaging_materials').update({ min_stock: parseFloat(value)||0 }).eq('id', id)
@@ -124,7 +99,6 @@ export default function MagazynOpakowan() {
         <div><div className="page-title">Magazyn opakowań</div><div className="page-sub">Materiały opakowaniowe — katalog i stany (FIFO)</div></div>
         <div className="flex" style={{ gap:8 }}>
           <input className="search" placeholder="Szukaj opakowania..." value={search} onChange={e => setSearch(e.target.value)} style={{ width:220 }} />
-          {canEdit && <button className="btn btn-primary btn-sm" onClick={openNewMat}>+ Nowy materiał</button>}
         </div>
       </div>
 
@@ -154,11 +128,10 @@ export default function MagazynOpakowan() {
             <th style={{ textAlign:'right' }}>Śr. cena zakupu</th>
             <th>Status</th>
             <th style={{ textAlign:'center' }}>Partii</th>
-            <th></th>
           </tr></thead>
           <tbody>
-            {loading && <tr><td colSpan={12} style={{ textAlign:'center', padding:24, color:'#888' }}>Ładowanie...</td></tr>}
-            {!loading && filtered.length===0 && <tr><td colSpan={12} style={{ textAlign:'center', padding:24, color:'#888' }}>Brak materiałów</td></tr>}
+            {loading && <tr><td colSpan={11} style={{ textAlign:'center', padding:24, color:'#888' }}>Ładowanie...</td></tr>}
+            {!loading && filtered.length===0 && <tr><td colSpan={11} style={{ textAlign:'center', padding:24, color:'#888' }}>Brak materiałów</td></tr>}
             {!loading && filtered.map(r => {
               const isExpanded = expandedId===r.id
               const bs = batchesForMat(r.id)
@@ -195,16 +168,10 @@ export default function MagazynOpakowan() {
                         : <span className="badge b-ok" style={{ fontSize:10 }}>OK</span>}
                     </td>
                     <td style={{ textAlign:'center', color:'#5F5E5A' }}>{r.batch_count}</td>
-                    <td>
-                      <div className="flex" style={{ gap:4 }}>
-                        {canEdit && <button className="btn btn-sm" style={{ fontSize:10, padding:'2px 7px' }} onClick={() => openEditMat(r)}>Edytuj</button>}
-                        {isAdmin && <button className="btn btn-sm btn-danger" style={{ fontSize:10, padding:'2px 7px' }} onClick={() => setConfirmDelete(r)}>Usuń</button>}
-                      </div>
-                    </td>
                   </tr>
                   {isExpanded && (
                     <tr>
-                      <td colSpan={12} style={{ padding:0, background:'#F9F8F5' }}>
+                      <td colSpan={11} style={{ padding:0, background:'#F9F8F5' }}>
                         <div style={{ padding:'8px 16px 12px 40px' }}>
                           <div style={{ fontSize:12, fontWeight:500, color:'#0F6E56', marginBottom:8 }}>Partie — {r.name}</div>
                           {bs.length===0 ? <div className="muted" style={{ fontSize:12 }}>Brak przyjęć. Stan pojawia się po przyjęciu dostawy w dziale Jakość → Przyjęcie dostawy.</div> : (
@@ -245,29 +212,6 @@ export default function MagazynOpakowan() {
         </table>
       </div>
 
-      {/* Modal materiał */}
-      <div className={`modal-overlay ${matModal?'open':''}`} onClick={e => e.target===e.currentTarget && setMatModal(false)}>
-        <div className="modal" style={{ maxWidth:520 }}>
-          <div className="modal-title">{matEdit?'Edytuj materiał':'Nowy materiał opakowaniowy'}</div>
-          {error && <div className="err-box">{error}</div>}
-          <div className="fr">
-            <div><label>Kod *</label><input value={matForm.code} onChange={e => mf('code',e.target.value)} placeholder="np. WP-10" /></div>
-            <div style={{ flex:2 }}><label>Nazwa *</label><input value={matForm.name} onChange={e => mf('name',e.target.value)} placeholder="np. Worek papierowy 10 kg" /></div>
-          </div>
-          <div className="fr">
-            <div><label>Typ</label><select value={matForm.type} onChange={e => mf('type',e.target.value)}>{TYPES.map(t => <option key={t} value={t} style={{textTransform:'capitalize'}}>{t}</option>)}</select></div>
-            <div><label>Jednostka</label><select value={matForm.unit} onChange={e => mf('unit',e.target.value)}>{UNITS.map(u => <option key={u} value={u}>{u}</option>)}</select></div>
-            <div><label>Minimum</label><input type="number" step="1" min="0" value={matForm.min_stock} onChange={e => mf('min_stock',e.target.value)} /></div>
-          </div>
-          <div><label>Kod segmentu BOM <span className="muted" style={{ fontWeight:400 }}>(np. WP = worek papierowy, PE = paleta euro)</span></label><input value={matForm.segment_code} onChange={e => mf('segment_code',e.target.value)} placeholder="np. WP" style={{ textTransform:'uppercase', maxWidth:160 }} /></div>
-          <div><label>Uwagi</label><input value={matForm.notes} onChange={e => mf('notes',e.target.value)} placeholder="opcjonalne" /></div>
-          <div className="modal-footer">
-            <button className="btn" onClick={() => setMatModal(false)}>Anuluj</button>
-            <button className="btn btn-primary" onClick={saveMat} disabled={saving}>{saving?'Zapisywanie...':matEdit?'Zapisz zmiany':'Dodaj materiał'}</button>
-          </div>
-        </div>
-      </div>
-
       {/* Modal korekta */}
       <div className={`modal-overlay ${corrModal?'open':''}`} onClick={e => e.target===e.currentTarget && setCorrModal(false)}>
         <div className="modal" style={{ maxWidth:480 }}>
@@ -290,17 +234,6 @@ export default function MagazynOpakowan() {
         </div>
       </div>
 
-      {/* Usuń materiał */}
-      <div className={`modal-overlay ${confirmDelete?'open':''}`} onClick={e => e.target===e.currentTarget && setConfirmDelete(null)}>
-        <div className="modal" style={{ maxWidth:420 }}>
-          <div className="modal-title">Usuń materiał</div>
-          <div className="warn-box">Usunąć materiał <b>{confirmDelete?.code} — {confirmDelete?.name}</b>? Usunie też jego partie i korekty.</div>
-          <div className="modal-footer">
-            <button className="btn" onClick={() => setConfirmDelete(null)}>Anuluj</button>
-            <button className="btn btn-danger" onClick={() => deleteMat(confirmDelete)}>Tak, usuń</button>
-          </div>
-        </div>
-      </div>
     </div>
   )
 }
