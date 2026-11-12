@@ -15,15 +15,6 @@ export default function Magazyn() {
   const [expandedId, setExpandedId] = useState(null)
   const [batchDetails, setBatchDetails] = useState({})
 
-  const [bilansDat1, setBilansDat1] = useState(() => {
-    const d = new Date(); d.setDate(1)
-    return d.toISOString().slice(0,10)
-  })
-  const [bilansDat2, setBilansDat2] = useState(new Date().toISOString().slice(0,10))
-  const [bilansMode, setBilansMode] = useState('miesiac')
-  const [showBilans, setShowBilans] = useState(false)
-  const [bilansData, setBilansData] = useState([])
-  const [bilansLoading, setBilansLoading] = useState(false)
 
   useEffect(() => { load() }, [])
 
@@ -156,208 +147,6 @@ export default function Magazyn() {
     )
   }
 
-  function setMiesiac() {
-    const now = new Date(); const y = now.getFullYear(); const m = now.getMonth()
-    const first = `${y}-${String(m+1).padStart(2,'0')}-01`
-    const lastDay = new Date(y, m+1, 0).getDate()
-    const last = `${y}-${String(m+1).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`
-    setBilansDat1(first); setBilansDat2(last); setBilansMode('miesiac')
-  }
-
-  function setKwartal() {
-    const now = new Date(); const y = now.getFullYear(); const q = Math.floor(now.getMonth()/3)
-    const firstMonth = q*3+1; const lastMonth = q*3+3
-    const first = `${y}-${String(firstMonth).padStart(2,'0')}-01`
-    const lastDay = new Date(y, lastMonth, 0).getDate()
-    const last = `${y}-${String(lastMonth).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`
-    setBilansDat1(first); setBilansDat2(last); setBilansMode('kwartal')
-  }
-
-  function setRok() {
-    const y = new Date().getFullYear()
-    setBilansDat1(`${y}-01-01`); setBilansDat2(`${y}-12-31`); setBilansMode('rok')
-  }
-
-  async function obliczBilans() {
-    setBilansLoading(true); setShowBilans(true)
-    const d1 = bilansDat1, d2 = bilansDat2
-
-    const { data: ingredients } = await supabase
-      .from('ingredients').select('id,code,name').eq('status','aktywny').order('code')
-
-    // Wszystkie dane naraz
-    const [
-      { data: przyjBefore },
-      { data: przyjW },
-      { data: korBefore },
-      { data: korW },
-      { data: prodBefore },
-      { data: prodW },
-    ] = await Promise.all([
-      // Przyjęcia PRZED d1
-      supabase.from('ingredient_batches')
-        .select('ingredient_id, quantity_kg, unit_price_pln')
-        .lt('received_date', d1),
-      // Przyjęcia W ZAKRESIE d1-d2
-      supabase.from('ingredient_batches')
-        .select('ingredient_id, quantity_kg, unit_price_pln')
-        .gte('received_date', d1).lte('received_date', d2),
-      // Korekty PRZED d1
-      supabase.from('stock_corrections')
-        .select('delta_kg, ingredient_batches(ingredient_id, unit_price_pln)')
-        .lt('event_date', d1),
-      // Korekty W ZAKRESIE d1-d2
-      supabase.from('stock_corrections')
-        .select('delta_kg, ingredient_batches(ingredient_id, unit_price_pln)')
-        .gte('event_date', d1).lte('event_date', d2),
-      // Zużycie produkcyjne PRZED d1
-      supabase.from('production_batch_items')
-        .select('ingredient_id, quantity_used_kg, ingredient_batches(unit_price_pln), production_batches(production_date)')
-        .lt('production_batches.production_date', d1),
-      // Zużycie produkcyjne W ZAKRESIE d1-d2
-      supabase.from('production_batch_items')
-        .select('ingredient_id, quantity_used_kg, ingredient_batches(unit_price_pln), production_batches(production_date)')
-        .gte('production_batches.production_date', d1).lte('production_batches.production_date', d2),
-    ])
-
-    // Pomocnik: sumuj po ingredient_id
-    const sum = (arr, getIngId, getKg, getVal) => {
-      const kgMap = {}, valMap = {}
-      for (const item of (arr||[])) {
-        const id = getIngId(item)
-        if (!id) continue
-        const kg = parseFloat(getKg(item)||0)
-        const val = parseFloat(getVal(item)||0)
-        kgMap[id] = (kgMap[id]||0) + kg
-        valMap[id] = (valMap[id]||0) + val
-      }
-      return { kgMap, valMap }
-    }
-
-    // BO: przyjęcia przed d1
-    const boP = sum(przyjBefore,
-      p => p.ingredient_id,
-      p => p.quantity_kg,
-      p => parseFloat(p.unit_price_pln||0) * parseFloat(p.quantity_kg)
-    )
-    // BO: minus korekty przed d1
-    const boK = sum(korBefore,
-      k => k.ingredient_batches?.ingredient_id,
-      k => k.delta_kg,
-      k => parseFloat(k.ingredient_batches?.unit_price_pln||0) * parseFloat(k.delta_kg)
-    )
-    // BO: minus zużycie przed d1
-    const boR = sum(
-      (prodBefore||[]).filter(p => p.production_batches?.production_date < d1),
-      p => p.ingredient_id,
-      p => p.quantity_used_kg,
-      p => parseFloat(p.ingredient_batches?.unit_price_pln||0) * parseFloat(p.quantity_used_kg)
-    )
-
-    // Przychód w zakresie
-    const przych = sum(przyjW,
-      p => p.ingredient_id,
-      p => p.quantity_kg,
-      p => parseFloat(p.unit_price_pln||0) * parseFloat(p.quantity_kg)
-    )
-
-    // Korekty w zakresie
-    const kor = sum(korW,
-      k => k.ingredient_batches?.ingredient_id,
-      k => k.delta_kg,
-      k => parseFloat(k.ingredient_batches?.unit_price_pln||0) * parseFloat(k.delta_kg)
-    )
-
-    // Rozchód w zakresie
-    const rozch = sum(
-      (prodW||[]).filter(p => {
-        const d = p.production_batches?.production_date
-        return d && d >= d1 && d <= d2
-      }),
-      p => p.ingredient_id,
-      p => p.quantity_used_kg,
-      p => parseFloat(p.ingredient_batches?.unit_price_pln||0) * parseFloat(p.quantity_used_kg)
-    )
-
-    const bilans = (ingredients||[]).map(ing => {
-      const id = ing.id
-
-      const boKg = parseFloat(Math.max(0,
-        (boP.kgMap[id]||0) + (boK.kgMap[id]||0) - (boR.kgMap[id]||0)
-      ).toFixed(3))
-      const boVal = parseFloat(Math.max(0,
-        (boP.valMap[id]||0) + (boK.valMap[id]||0) - (boR.valMap[id]||0)
-      ).toFixed(2))
-
-      const przychKg = parseFloat((przych.kgMap[id]||0).toFixed(3))
-      const przychVal = parseFloat((przych.valMap[id]||0).toFixed(2))
-
-      const korKg = parseFloat((kor.kgMap[id]||0).toFixed(3))
-      const korVal = parseFloat((kor.valMap[id]||0).toFixed(2))
-
-      const rozchKg = parseFloat((rozch.kgMap[id]||0).toFixed(3))
-      const rozchVal = parseFloat((rozch.valMap[id]||0).toFixed(2))
-
-      const bzKg = parseFloat(Math.max(0, boKg + przychKg + korKg - rozchKg).toFixed(3))
-      const bzVal = parseFloat(Math.max(0, boVal + przychVal + korVal - rozchVal).toFixed(2))
-
-      return {
-        id, code: ing.code, name: ing.name,
-        bo: boKg, boVal,
-        przych: przychKg, przychVal,
-        kor: korKg, korVal,
-        rozch: rozchKg, rozchVal,
-        bz: bzKg, bzVal
-      }
-    }).filter(r => r.bo>0 || r.przych>0 || r.kor!==0 || r.rozch>0 || r.bz>0)
-
-    setBilansData(bilans); setBilansLoading(false)
-  }
-
-  const fmt = v => v.toLocaleString('pl-PL',{minimumFractionDigits:3,maximumFractionDigits:3})
-  const fmtVal = v => v > 0 ? v.toLocaleString('pl-PL',{minimumFractionDigits:2,maximumFractionDigits:2})+' zł' : v < 0 ? v.toLocaleString('pl-PL',{minimumFractionDigits:2,maximumFractionDigits:2})+' zł' : '—'
-
-  function printBilans() {
-    const d1str = new Date(bilansDat1).toLocaleDateString('pl-PL')
-    const d2str = new Date(bilansDat2).toLocaleDateString('pl-PL')
-    const fv = v => v > 0 ? v.toLocaleString('pl-PL',{minimumFractionDigits:2,maximumFractionDigits:2})+' zł' : v < 0 ? v.toLocaleString('pl-PL',{minimumFractionDigits:2,maximumFractionDigits:2})+' zł' : '—'
-    const rowsHtml = bilansData.map((r,i) => `
-      <tr>
-        <td>${i+1}</td><td style="font-family:monospace;font-size:8px">${r.code}</td><td>${r.name}</td>
-        <td style="text-align:right">${r.bo.toFixed(3)}</td>
-        <td style="text-align:right;color:#555;font-size:8px">${fv(r.boVal)}</td>
-        <td style="text-align:right;color:#085041">${r.przych.toFixed(3)}</td>
-        <td style="text-align:right;color:#085041;font-size:8px">${fv(r.przychVal)}</td>
-        <td style="text-align:right;color:${r.kor<0?'#A32D2D':'#633806'}">${r.kor!==0?(r.kor>0?'+':'')+r.kor.toFixed(3):'—'}</td>
-        <td style="text-align:right;color:${r.kor<0?'#A32D2D':'#633806'};font-size:8px">${r.kor!==0?fv(r.korVal):'—'}</td>
-        <td style="text-align:right;color:#7B3F00">${r.rozch.toFixed(3)}</td>
-        <td style="text-align:right;color:#7B3F00;font-size:8px">${fv(r.rozchVal)}</td>
-        <td style="text-align:right;font-weight:bold;color:#0C447C">${r.bz.toFixed(3)}</td>
-        <td style="text-align:right;font-weight:bold;color:#3C3489;font-size:8px">${fv(r.bzVal)}</td>
-        <td></td>
-      </tr>`).join('')
-    const sumaHtml = `<tr class="total"><td colspan="3" style="text-align:right">SUMA:</td>
-      <td style="text-align:right">${bilansData.reduce((s,r)=>s+r.bo,0).toFixed(3)}</td>
-      <td style="text-align:right;font-size:8px">${fv(bilansData.reduce((s,r)=>s+r.boVal,0))}</td>
-      <td style="text-align:right;color:#085041">${bilansData.reduce((s,r)=>s+r.przych,0).toFixed(3)}</td>
-      <td style="text-align:right;color:#085041;font-size:8px">${fv(bilansData.reduce((s,r)=>s+r.przychVal,0))}</td>
-      <td style="text-align:right">${bilansData.reduce((s,r)=>s+r.kor,0).toFixed(3)}</td>
-      <td style="text-align:right;font-size:8px">${fv(bilansData.reduce((s,r)=>s+r.korVal,0))}</td>
-      <td style="text-align:right;color:#7B3F00">${bilansData.reduce((s,r)=>s+r.rozch,0).toFixed(3)}</td>
-      <td style="text-align:right;color:#7B3F00;font-size:8px">${fv(bilansData.reduce((s,r)=>s+r.rozchVal,0))}</td>
-      <td style="text-align:right;font-weight:bold">${bilansData.reduce((s,r)=>s+r.bz,0).toFixed(3)}</td>
-      <td style="text-align:right;font-weight:bold;font-size:8px">${fv(bilansData.reduce((s,r)=>s+r.bzVal,0))}</td>
-      <td></td></tr>`
-    const html = `<!DOCTYPE html><html lang="pl"><head><meta charset="UTF-8"><title>Bilans magazynowy</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:10px;padding:14px}.header{display:flex;justify-content:space-between;border-bottom:2px solid #0F6E56;padding-bottom:8px;margin-bottom:10px}.company{font-size:15px;font-weight:bold;color:#0F6E56}.title{font-size:12px;font-weight:bold;margin-top:3px}.period{font-size:13px;font-weight:bold;color:#0F6E56;margin-top:2px}table{width:100%;border-collapse:collapse;margin-bottom:10px}th{background:#0F6E56;color:#fff;padding:5px;border:1px solid #085041;font-size:8px;text-align:left}td{padding:4px 5px;border:1px solid #D3D1C7;font-size:9px}tr:nth-child(even) td{background:#FAFAF8}.total td{background:#E1F5EE!important;font-weight:bold}.sig{margin-top:16px;border:1px solid #D3D1C7;border-radius:4px;padding:12px}.sig-title{font-weight:bold;font-size:10px;border-bottom:1px solid #D3D1C7;padding-bottom:6px;margin-bottom:12px}.sig-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px}.sig-label{font-size:9px;font-weight:bold;color:#333;text-transform:uppercase;margin-bottom:20px}.sig-line{border-bottom:1.5px solid #333;margin-bottom:4px}.sig-sub{font-size:8px;color:#888}.footer{margin-top:8px;font-size:8px;color:#888;text-align:center;border-top:1px solid #D3D1C7;padding-top:5px}@media print{@page{margin:8mm;size:A4 landscape}}</style></head><body>
-<div class="header"><div><div class="company">InstantMix Pro</div><div class="title">Bilans magazynowy składników</div><div class="period">Okres: ${d1str} — ${d2str}</div></div><div style="text-align:right;font-size:9px;color:#555">Wygenerowano: ${new Date().toLocaleDateString('pl-PL')} ${new Date().toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit'})}<br>Wydrukował: ${profile?.full_name||'—'}</div></div>
-<table><thead><tr><th style="width:22px">Lp.</th><th style="width:55px">Kod</th><th>Nazwa składnika</th><th style="width:55px;text-align:right">BO (kg)</th><th style="width:62px;text-align:right">Wart. BO</th><th style="width:60px;text-align:right">Przychód (kg)</th><th style="width:62px;text-align:right">Wart. przyj.</th><th style="width:55px;text-align:right">Korekty (kg)</th><th style="width:62px;text-align:right">Wart. kor.</th><th style="width:60px;text-align:right">Rozchód (kg)</th><th style="width:62px;text-align:right">Wart. rozch.</th><th style="width:55px;text-align:right">BZ (kg)</th><th style="width:62px;text-align:right">Wart. BZ</th><th style="width:50px">Uwagi</th></tr></thead>
-<tbody>${rowsHtml}${sumaHtml}</tbody></table>
-<div class="sig"><div class="sig-title">Potwierdzenie bilansu magazynowego</div><div class="sig-grid"><div><div class="sig-label">Sporządził</div><div class="sig-line"></div><div class="sig-sub">Imię, nazwisko i podpis</div><div style="margin-top:8px;font-size:8px;color:#888">Data: _______________</div></div><div><div class="sig-label">Weryfikował</div><div class="sig-line"></div><div class="sig-sub">Imię, nazwisko i podpis</div><div style="margin-top:8px;font-size:8px;color:#888">Data: _______________</div></div><div><div class="sig-label">Zatwierdził</div><div class="sig-line"></div><div class="sig-sub">Imię, nazwisko i podpis</div><div style="margin-top:8px;font-size:8px;color:#888">Data: _______________</div></div></div></div>
-<div class="footer">InstantMix Pro | Bilans magazynowy | ${d1str} — ${d2str} | ${profile?.full_name||'—'}</div>
-<script>window.onload=function(){window.print()}</script></body></html>`
-    const win = window.open('','_blank'); win.document.write(html); win.document.close()
-  }
-
   function printInventory() {
     const dateStr = new Date().toLocaleDateString('pl-PL')
     const timeStr = new Date().toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit'})
@@ -391,88 +180,6 @@ export default function Magazyn() {
         <div className="stat-card"><div className="stat-label">Wartość magazynu</div><div className="stat-val" style={{ fontSize:16 }}>{totalValue > 0 ? totalValue.toLocaleString('pl-PL', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' zł' : '—'}</div></div>
       </div>
 
-      <div className="card" style={{ marginBottom:12 }}>
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
-          <span style={{ fontWeight:500, fontSize:13 }}>Bilans magazynowy</span>
-          <div className="flex" style={{ gap:6 }}>
-            <button className={`btn btn-sm ${bilansMode==='miesiac'?'btn-primary':''}`} onClick={setMiesiac}>Bieżący miesiąc</button>
-            <button className={`btn btn-sm ${bilansMode==='kwartal'?'btn-primary':''}`} onClick={setKwartal}>Bieżący kwartał</button>
-            <button className={`btn btn-sm ${bilansMode==='rok'?'btn-primary':''}`} onClick={setRok}>Bieżący rok</button>
-            <button className={`btn btn-sm ${bilansMode==='custom'?'btn-primary':''}`} onClick={() => setBilansMode('custom')}>Własny zakres</button>
-          </div>
-        </div>
-        <div style={{ display:'grid', gridTemplateColumns:'auto auto auto auto 1fr', gap:10, alignItems:'end' }}>
-          <div><label>Bilans otwarcia na</label><input type="date" value={bilansDat1} onChange={e => { setBilansDat1(e.target.value); setBilansMode('custom') }} /></div>
-          <div style={{ paddingTop:20, color:'#888' }}>→</div>
-          <div><label>Bilans zamknięcia na</label><input type="date" value={bilansDat2} onChange={e => { setBilansDat2(e.target.value); setBilansMode('custom') }} /></div>
-          <button className="btn btn-primary btn-sm" onClick={obliczBilans} style={{ alignSelf:'flex-end' }}>Oblicz bilans</button>
-          {showBilans && bilansData.length > 0 && <button className="btn btn-sm" onClick={printBilans} style={{ alignSelf:'flex-end' }}>Drukuj bilans</button>}
-        </div>
-
-        {showBilans && (
-          <div style={{ marginTop:12 }}>
-            {bilansLoading ? (
-              <div style={{ textAlign:'center', padding:16 }}><span className="spinner" /> Obliczam bilans...</div>
-            ) : bilansData.length === 0 ? (
-              <div className="muted" style={{ padding:12 }}>Brak ruchów magazynowych w wybranym okresie.</div>
-            ) : (
-              <div style={{ overflowX:'auto' }}>
-                <table style={{ minWidth:900 }}>
-                  <thead style={{ position:'sticky', top:0, zIndex:10, background:'#fff' }}><tr>
-                    <th>Kod</th><th>Nazwa składnika</th>
-                    <th style={{ textAlign:'right', background:'#E6F1FB', color:'#0C447C' }}>BO (kg)</th>
-                    <th style={{ textAlign:'right', background:'#E6F1FB', color:'#0C447C', fontSize:10 }}>Wart. BO</th>
-                    <th style={{ textAlign:'right', background:'#E1F5EE', color:'#085041' }}>Przychód (kg)</th>
-                    <th style={{ textAlign:'right', background:'#E1F5EE', color:'#085041', fontSize:10 }}>Wart. przyj.</th>
-                    <th style={{ textAlign:'right', background:'#FFF8E1', color:'#E65100' }}>Korekty (kg)</th>
-                    <th style={{ textAlign:'right', background:'#FFF8E1', color:'#E65100', fontSize:10 }}>Wart. kor.</th>
-                    <th style={{ textAlign:'right', background:'#FAEEDA', color:'#7B3F00' }}>Rozchód (kg)</th>
-                    <th style={{ textAlign:'right', background:'#FAEEDA', color:'#7B3F00', fontSize:10 }}>Wart. rozch.</th>
-                    <th style={{ textAlign:'right', background:'#EEEDFE', color:'#3C3489' }}>BZ (kg)</th>
-                    <th style={{ textAlign:'right', background:'#EEEDFE', color:'#3C3489', fontSize:10 }}>Wart. BZ</th>
-                  </tr></thead>
-                  <tbody>
-                    {bilansData.map(r => (
-                      <tr key={r.id}>
-                        <td><span className="lot">{r.code}</span></td>
-                        <td style={{ fontWeight:500 }}>{r.name}</td>
-                        <td style={{ textAlign:'right', color:'#0C447C' }}>{fmt(r.bo)}</td>
-                        <td style={{ textAlign:'right', color:'#0C447C', fontSize:11 }}>{fmtVal(r.boVal)}</td>
-                        <td style={{ textAlign:'right', color:'#085041', fontWeight:500 }}>{fmt(r.przych)}</td>
-                        <td style={{ textAlign:'right', color:'#085041', fontSize:11 }}>{fmtVal(r.przychVal)}</td>
-                        <td style={{ textAlign:'right', color: r.kor < 0 ? '#A32D2D' : r.kor > 0 ? '#085041' : '#888', fontWeight:500 }}>
-                          {r.kor !== 0 ? (r.kor > 0 ? '+' : '') + fmt(r.kor) : '—'}
-                        </td>
-                        <td style={{ textAlign:'right', color: r.korVal < 0 ? '#A32D2D' : '#E65100', fontSize:11 }}>
-                          {r.kor !== 0 ? fmtVal(r.korVal) : '—'}
-                        </td>
-                        <td style={{ textAlign:'right', color:'#7B3F00', fontWeight:500 }}>{fmt(r.rozch)}</td>
-                        <td style={{ textAlign:'right', color:'#7B3F00', fontSize:11 }}>{fmtVal(r.rozchVal)}</td>
-                        <td style={{ textAlign:'right', color:'#3C3489', fontWeight:700 }}>{fmt(r.bz)}</td>
-                        <td style={{ textAlign:'right', color:'#3C3489', fontWeight:600, fontSize:11 }}>{fmtVal(r.bzVal)}</td>
-                      </tr>
-                    ))}
-                    <tr style={{ background:'#F1EFE8' }}>
-                      <td colSpan={2} style={{ fontWeight:500, textAlign:'right' }}>SUMA</td>
-                      <td style={{ textAlign:'right', fontWeight:700 }}>{fmt(bilansData.reduce((s,r)=>s+r.bo,0))}</td>
-                      <td style={{ textAlign:'right', fontWeight:700, fontSize:11 }}>{fmtVal(bilansData.reduce((s,r)=>s+r.boVal,0))}</td>
-                      <td style={{ textAlign:'right', fontWeight:700, color:'#085041' }}>{fmt(bilansData.reduce((s,r)=>s+r.przych,0))}</td>
-                      <td style={{ textAlign:'right', fontWeight:700, color:'#085041', fontSize:11 }}>{fmtVal(bilansData.reduce((s,r)=>s+r.przychVal,0))}</td>
-                      <td style={{ textAlign:'right', fontWeight:700, color:'#E65100' }}>{fmt(bilansData.reduce((s,r)=>s+r.kor,0))}</td>
-                      <td style={{ textAlign:'right', fontWeight:700, color:'#E65100', fontSize:11 }}>{fmtVal(bilansData.reduce((s,r)=>s+r.korVal,0))}</td>
-                      <td style={{ textAlign:'right', fontWeight:700, color:'#7B3F00' }}>{fmt(bilansData.reduce((s,r)=>s+r.rozch,0))}</td>
-                      <td style={{ textAlign:'right', fontWeight:700, color:'#7B3F00', fontSize:11 }}>{fmtVal(bilansData.reduce((s,r)=>s+r.rozchVal,0))}</td>
-                      <td style={{ textAlign:'right', fontWeight:700, color:'#3C3489' }}>{fmt(bilansData.reduce((s,r)=>s+r.bz,0))}</td>
-                      <td style={{ textAlign:'right', fontWeight:700, color:'#3C3489', fontSize:11 }}>{fmtVal(bilansData.reduce((s,r)=>s+r.bzVal,0))}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
       <div className="flex" style={{ marginBottom:12, gap:8, flexWrap:'wrap' }}>
         <input className="search" placeholder="Szukaj składnika..." value={search} onChange={e => setSearch(e.target.value)} style={{ width:220 }} />
         {['wszystkie','alerty','krytyczne','ok'].map(f => (
@@ -490,9 +197,6 @@ export default function Magazyn() {
           <thead style={{ position:'sticky', top:0, zIndex:10, background:'#fff' }}><tr>
             <th style={{ width:32 }}></th>
             <th>Kod</th><th>Nazwa składnika</th>
-            <th style={{ textAlign:'right' }}>Przyjęto (kg)</th>
-            <th style={{ textAlign:'right' }}>Korekty (kg)</th>
-            <th style={{ textAlign:'right' }}>Zużyto (kg)</th>
             <th style={{ textAlign:'right' }}>Stan aktualny (kg)</th>
             <th style={{ textAlign:'right' }}>Wartość (zł)</th>
             <th style={{ textAlign:'right' }}>Śr. cena zakupu (zł/kg)</th>
@@ -502,8 +206,8 @@ export default function Magazyn() {
             <th>Alergen</th>
           </tr></thead>
           <tbody>
-            {loading && <tr><td colSpan={13} style={{ textAlign:'center', padding:32, color:'#888' }}><span className="spinner" /> Obliczam stany...</td></tr>}
-            {!loading && filtered.length===0 && <tr><td colSpan={13} style={{ textAlign:'center', padding:24, color:'#888' }}>Brak wyników</td></tr>}
+            {loading && <tr><td colSpan={10} style={{ textAlign:'center', padding:32, color:'#888' }}><span className="spinner" /> Obliczam stany...</td></tr>}
+            {!loading && filtered.length===0 && <tr><td colSpan={10} style={{ textAlign:'center', padding:24, color:'#888' }}>Brak wyników</td></tr>}
             {!loading && filtered.map(r => (
               <React.Fragment key={r.id}>
                 <tr style={alertRowStyle(r)}>
@@ -515,11 +219,6 @@ export default function Magazyn() {
                   </td>
                   <td><span className="lot">{r.code}</span></td>
                   <td style={{ fontWeight:500 }}>{r.name}</td>
-                  <td style={{ textAlign:'right', color:'#085041' }}>{r.in_stock.toFixed(3)}</td>
-                  <td style={{ textAlign:'right', color: r.corrections_total < 0 ? '#A32D2D' : r.corrections_total > 0 ? '#085041' : '#888' }}>
-                    {r.corrections_total !== 0 ? (r.corrections_total > 0 ? '+' : '') + r.corrections_total.toFixed(3) : '—'}
-                  </td>
-                  <td style={{ textAlign:'right', color:'#633806' }}>{r.used_total.toFixed(3)}</td>
                   <td style={{ textAlign:'right' }}>
                     <div style={{ fontWeight:700, fontSize:14 }}>{r.current.toFixed(3)}</div>
                     {stockBar(r)}
@@ -557,9 +256,10 @@ export default function Magazyn() {
                 </tr>
                 {expandedId===r.id && (
                   <tr key={`${r.id}-detail`}>
-                    <td colSpan={13} style={{ padding:0, background:'#F9F8F5' }}>
+                    <td colSpan={10} style={{ padding:0, background:'#F9F8F5' }}>
                       <div style={{ padding:'8px 16px 10px 40px' }}>
                         <div style={{ fontSize:12, fontWeight:500, marginBottom:6, color:'#0F6E56' }}>Partie na stanie — {r.name}</div>
+                        <div style={{ fontSize:11, color:'#5F5E5A', marginBottom:8 }}>Przyjęto: <b>{r.in_stock.toFixed(3)}</b> · Korekty: <b>{r.corrections_total>0?'+':''}{r.corrections_total.toFixed(3)}</b> · Zużyto: <b>{r.used_total.toFixed(3)}</b> · Stan: <b style={{color:'#0F6E56'}}>{r.current.toFixed(3)} kg</b></div>
                         {!batchDetails[r.id] || batchDetails[r.id].length===0 ? (
                           <div className="muted" style={{ fontSize:12 }}>Brak dopuszczonych partii na stanie</div>
                         ) : (
