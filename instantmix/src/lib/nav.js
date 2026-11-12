@@ -20,7 +20,8 @@ export const DEPARTMENTS = [
     { id: 'bom',               label: 'BOM' },
   ]},
   { id: 'produkcja', label: 'Produkcja', tabs: [
-    { id: 'kalkulator',        label: 'Planowanie zleceń' },
+    { id: 'kalkulator',        label: 'Kalkulator' },
+    { id: 'planowanie',        label: 'Planowanie zleceń' },
     { id: 'produkcja',         label: 'Produkcja' },
     { id: 'pakowanie',         label: 'Pakowanie' },
     { id: 'magazynwg',         label: 'Magazyn WG' },
