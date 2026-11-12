@@ -70,6 +70,13 @@ export default function Bom() {
   // sortowanie: najpierw po NUMERZE KLIENTA, potem po KODZIE BOM; bez numeru klienta → na dół (jak w Recepturach)
   const clientNumById = {}
   clients.forEach(c => { clientNumById[c.id] = (c.number != null && c.number !== '') ? parseInt(c.number) : null })
+  const clientsSorted = [...clients].sort((a, b) => {
+    const na = clientNumById[a.id], nb = clientNumById[b.id]
+    if (na == null && nb != null) return 1
+    if (na != null && nb == null) return -1
+    if (na != null && nb != null && na !== nb) return na - nb
+    return (a.name || '').localeCompare(b.name || '')
+  })
   const sorted = [...filtered].sort((a, b) => {
     const na = a.client_id ? clientNumById[a.client_id] : null
     const nb = b.client_id ? clientNumById[b.client_id] : null
@@ -178,7 +185,7 @@ export default function Bom() {
         ))}
         <select value={filterClient} onChange={e => setFilterClient(e.target.value)} style={{ marginLeft:8, width:220 }}>
           <option value="">— wszyscy klienci —</option>
-          {clients.map(c => <option key={c.id} value={c.id}>{(c.number ? c.number+' — ' : '')+c.name}</option>)}
+          {clientsSorted.map(c => <option key={c.id} value={c.id}>{(c.number ? c.number+' — ' : '')+c.name}</option>)}
         </select>
       </div>
 
