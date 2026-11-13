@@ -15,6 +15,7 @@ export default function Planowanie() {
   const [prodOrders, setProdOrders] = useState([])
   const [recipes, setRecipes] = useState([])
   const [availByIng, setAvailByIng] = useState({})
+  const [luzStock, setLuzStock] = useState({})   // recipe_code -> dostępny półprodukt (kg)
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState(null)
   const [selOrders, setSelOrders] = useState([])
@@ -36,16 +37,18 @@ export default function Planowanie() {
 
   async function load() {
     setLoading(true)
-    const [{ data: s }, { data: po }, { data: rec }, { data: stock }, { data: used }] = await Promise.all([
-      supabase.from('orders').select('id,order_number,status,qty_units,quantity_kg,recipe_id,clients(number,name),bom(code_ext,recipe_id)').eq('status','nowe').order('ship_date',{ascending:true}),
+    const [{ data: s }, { data: po }, { data: rec }, { data: stock }, { data: used }, { data: vfg }] = await Promise.all([
+      supabase.from('orders').select('id,order_number,status,qty_units,quantity_kg,recipe_id,clients(number,name),bom(code_ext,recipe_id,gramatura_kg)').eq('status','nowe').order('ship_date',{ascending:true}),
       supabase.from('production_batches').select('id,lot_number,recipe_id,quantity_kg,client,prod_stage,planned_by,recipes(code,name,version),production_wsady(id,wsad_no,planned_kg,bb_plan_no),production_order_sales(order_id,orders(order_number))').not('prod_stage','is',null).order('lot_number',{ascending:false}),
       supabase.from('recipes').select('id,code,name,version,client,status').eq('status','dopuszczona').order('code'),
       supabase.from('v_stock').select('id,ingredient_id,delivery_lot,current_kg,received_date').order('received_date',{ascending:true}),
       supabase.from('production_batch_items').select('ingredient_batch_id,quantity_used_kg'),
+      supabase.from('v_finished_goods').select('recipe_code,available_kg,form'),
     ])
     const usedMap={}; (used||[]).forEach(u=>{ if(u.ingredient_batch_id) usedMap[u.ingredient_batch_id]=(usedMap[u.ingredient_batch_id]||0)+parseFloat(u.quantity_used_kg||0) })
     const avail={}; (stock||[]).forEach(x=>{ const a=parseFloat(x.current_kg)-(usedMap[x.id]||0); if(a>0.001)(avail[x.ingredient_id]=avail[x.ingredient_id]||[]).push({id:x.id,lot:x.delivery_lot,available:parseFloat(a.toFixed(3))}) })
-    setSalesNowe(s||[]); setProdOrders(po||[]); setRecipes(rec||[]); setAvailByIng(avail)
+    const lz={}; (vfg||[]).forEach(g=>{ if(g.form!=='spakowane'){ const a=parseFloat(g.available_kg||0); if(a>0.001) lz[g.recipe_code]=(lz[g.recipe_code]||0)+a } })
+    setSalesNowe(s||[]); setProdOrders(po||[]); setRecipes(rec||[]); setAvailByIng(avail); setLuzStock(lz)
     setLoading(false)
   }
 
@@ -54,6 +57,16 @@ export default function Planowanie() {
   const recipeOf = o => o.recipe_id || o.bom?.recipe_id || null
   const klient = o => o.clients ? `${o.clients.number||''} ${o.clients.name||''}`.trim() : '—'
   const recipe = recipes.find(r => r.id === recipeId)
+
+  const codeById = {}; recipes.forEach(r=>{ codeById[r.id]=r.code })
+  const luzForOrder = o => { const code = codeById[recipeOf(o)]; return code ? (luzStock[code]||0) : 0 }
+  const unitsFromKg = (kg, o) => { const g=parseFloat(o.bom?.gramatura_kg||0); return g>0 ? Math.floor(kg/g) : 0 }
+  async function realizujZMagazynu(o) {
+    const kg = luzForOrder(o)
+    if (!window.confirm(`Zrealizować zlecenie ${o.order_number} z magazynu?\nDostępny półprodukt: ${fmt(kg)} kg ≈ ${unitsFromKg(kg,o)} szt.\nZlecenie przejdzie na „Wyprodukowane" bez nowej produkcji (do spakowania z istniejących bigbagów).`)) return
+    await supabase.from('orders').update({ status:'wyprodukowane', produced_at:new Date().toISOString() }).eq('id', o.id)
+    load()
+  }
 
   const selRecipe = selOrders.length ? recipeOf(salesNowe.find(o=>o.id===selOrders[0])||{}) : null
   function toggleSel(o) {
@@ -318,14 +331,16 @@ ${bbBlocks}
       <div style={{fontSize:13,fontWeight:600,color:'#BA7517',margin:'4px 0 8px'}}>Zlecenia sprzedaży do zaplanowania ({salesNowe.length})</div>
       <div style={{background:'#fff',border:'0.5px solid #D3D1C7',borderRadius:8,overflowX:'auto',marginBottom:8}}>
         <table style={{minWidth:760}}>
-          <thead><tr><th style={{width:36}}></th><th>Nr zlecenia</th><th>Klient</th><th>Wyrób (BOM)</th><th style={{textAlign:'right'}}>Ilość szt.</th><th style={{textAlign:'right'}}>Waga</th></tr></thead>
+          <thead><tr><th style={{width:36}}></th><th>Nr zlecenia</th><th>Klient</th><th>Wyrób (BOM)</th><th style={{textAlign:'right'}}>Ilość szt.</th><th style={{textAlign:'right'}}>Waga</th><th style={{textAlign:'right'}}>Na stanie (półprodukt)</th><th></th></tr></thead>
           <tbody>
-            {loading&&<tr><td colSpan={6} style={{textAlign:'center',padding:20,color:'#888'}}>Ładowanie...</td></tr>}
-            {!loading&&salesNowe.length===0&&<tr><td colSpan={6} style={{textAlign:'center',padding:20,color:'#888'}}>Brak nowych zleceń</td></tr>}
-            {!loading&&salesNowe.map(o=>{const disabled=selOrders.length>0&&recipeOf(o)!==selRecipe&&!selOrders.includes(o.id);return(
-              <tr key={o.id} style={{opacity:disabled?0.4:1}}>
+            {loading&&<tr><td colSpan={8} style={{textAlign:'center',padding:20,color:'#888'}}>Ładowanie...</td></tr>}
+            {!loading&&salesNowe.length===0&&<tr><td colSpan={8} style={{textAlign:'center',padding:20,color:'#888'}}>Brak nowych zleceń</td></tr>}
+            {!loading&&salesNowe.map(o=>{const disabled=selOrders.length>0&&recipeOf(o)!==selRecipe&&!selOrders.includes(o.id);const kg=luzForOrder(o);const uu=unitsFromKg(kg,o);const enough=o.qty_units&&uu>=parseInt(o.qty_units);return(
+              <tr key={o.id} style={{opacity:disabled?0.4:1, background: kg>0.001?'#F0FAF5':undefined}}>
                 <td style={{textAlign:'center'}}><input type="checkbox" checked={selOrders.includes(o.id)} disabled={disabled} onChange={()=>toggleSel(o)} /></td>
                 <td><span className="lot">{o.order_number||'—'}</span></td><td style={{fontSize:12}}>{klient(o)}</td><td style={{fontWeight:500,fontSize:12}}>{o.bom?.code_ext||'—'}</td><td style={{textAlign:'right'}}>{fmt(o.qty_units)}</td><td style={{textAlign:'right',fontWeight:600}}>{fmt(o.quantity_kg)} kg</td>
+                <td style={{textAlign:'right'}}>{kg>0.001 ? <span style={{color:enough?'#085041':'#BA7517',fontWeight:600}}>{fmt(kg)} kg <span className="muted" style={{fontSize:10}}>(~{uu} szt.{enough?' ✓':''})</span></span> : <span className="muted">—</span>}</td>
+                <td>{canEdit && kg>0.001 && <button className="btn btn-sm" style={{background:'#1D9E75',color:'#fff',borderColor:'#1D9E75'}} onClick={()=>realizujZMagazynu(o)}>Z magazynu</button>}</td>
               </tr>)})}
           </tbody>
         </table>
