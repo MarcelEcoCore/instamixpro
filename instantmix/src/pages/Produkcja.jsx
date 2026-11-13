@@ -6,23 +6,22 @@ export default function Produkcja() {
   const { profile } = useAuth()
   const canEdit = true
 
-  const [view, setView] = useState('list')      // 'list' | 'produce'
+  const [view, setView] = useState('list')
   const [planned, setPlanned] = useState([])
   const [done, setDone] = useState([])
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState(null)
 
-  // panel produkcji
   const [order, setOrder] = useState(null)
   const [recipe, setRecipe] = useState(null)
-  const [items, setItems] = useState([])         // recipe_items
+  const [items, setItems] = useState([])
   const [availByIng, setAvailByIng] = useState({})
-  const [ingMap, setIngMap] = useState({})
-  const [picks, setPicks] = useState({})         // `${wsadId}|${ingId}` -> {batchId, qty}
+  const [picks, setPicks] = useState({})   // `${wsadId}|${ingId}` -> [{batchId, qty}]
   const [operator, setOperator] = useState('')
   const [foreman, setForeman] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [bbCache, setBbCache] = useState({})
 
   useEffect(() => { load() }, [])
 
@@ -39,14 +38,49 @@ export default function Produkcja() {
 
   const fmt = v => parseFloat(v||0).toLocaleString('pl-PL',{maximumFractionDigits:3})
   const bbCountOf = o => new Set((o.production_wsady||[]).map(w=>w.bb_plan_no||1)).size
+  const targetOf = (w, it) => parseFloat(((parseFloat(w.planned_kg||0)*parseFloat(it.percentage||0))/100).toFixed(3))
+
+  // greedy: rozłóż cel na partie wg dostępnej puli remainingMap (najstarsze pierwsze)
+  function fillLines(ingBatches, target, remainingMap) {
+    let need = target; const lines = []
+    for (const b of (ingBatches||[])) {
+      if (need <= 0.001) break
+      const rem = remainingMap[b.id] ?? b.available
+      if (rem <= 0.001) continue
+      const take = Math.min(need, rem)
+      lines.push({ batchId: b.id, qty: String(parseFloat(take.toFixed(3))) })
+      remainingMap[b.id] = parseFloat((rem - take).toFixed(3))
+      need = parseFloat((need - take).toFixed(3))
+    }
+    if (lines.length === 0) lines.push({ batchId:'', qty:'' })
+    return lines
+  }
+
+  function computeAutoFill(wsadyList, its, avail, skipWsadId=null, basePicks=null) {
+    const remainingMap = {}
+    Object.values(avail).flat().forEach(b => { remainingMap[b.id] = b.available })
+    // odejmij alokacje innych wsadów (dla recompute pojedynczego wsadu)
+    if (basePicks) Object.entries(basePicks).forEach(([key, lines]) => {
+      const wid = key.split('|')[0]
+      if (skipWsadId && wid === String(skipWsadId)) return
+      lines.forEach(l => { if (l.batchId) remainingMap[l.batchId] = parseFloat(((remainingMap[l.batchId]??0) - (parseFloat(l.qty)||0)).toFixed(3)) })
+    })
+    const pk = basePicks ? { ...basePicks } : {}
+    const order = wsadyList.slice().sort((a,b)=>a.wsad_no-b.wsad_no)
+    for (const w of order) {
+      if (skipWsadId && String(w.id)!==String(skipWsadId)) continue
+      its.forEach(it => { pk[`${w.id}|${it.ingredient_id}`] = fillLines(avail[it.ingredient_id]||[], targetOf(w,it), remainingMap) })
+      if (!skipWsadId) continue
+    }
+    return pk
+  }
 
   async function openProduce(o) {
     setError('')
-    const [{ data: rec }, { data: stock }, { data: used }, { data: ings }] = await Promise.all([
+    const [{ data: rec }, { data: stock }, { data: used }] = await Promise.all([
       supabase.from('recipes').select('id,code,name,version,recipe_items(sort_order,percentage,ingredient_id,ingredients(code,name,has_allergen,allergen_type))').eq('id', o.recipe_id).single(),
       supabase.from('v_stock').select('id,ingredient_id,delivery_lot,current_kg,received_date').order('received_date',{ascending:true}),
       supabase.from('production_batch_items').select('ingredient_batch_id,quantity_used_kg'),
-      supabase.from('ingredients').select('id,code,name'),
     ])
     const usedMap = {}; (used||[]).forEach(u => { if(u.ingredient_batch_id) usedMap[u.ingredient_batch_id]=(usedMap[u.ingredient_batch_id]||0)+parseFloat(u.quantity_used_kg||0) })
     const avail = {}
@@ -54,61 +88,62 @@ export default function Produkcja() {
       const a = parseFloat(s.current_kg)-(usedMap[s.id]||0)
       if (a>0.001) (avail[s.ingredient_id]=avail[s.ingredient_id]||[]).push({ id:s.id, lot:s.delivery_lot, available:parseFloat(a.toFixed(3)) })
     })
-    const im={}; (ings||[]).forEach(x=>{im[x.id]=x})
     const ri = [...(rec?.recipe_items||[])].sort((a,b)=>(a.sort_order||0)-(b.sort_order||0))
-    // domyślne wybory: pierwsza partia + ilość = cel (% × masa wsadu)
-    const pk = {}
-    ;(o.production_wsady||[]).forEach(w => {
-      ri.forEach(it => {
-        const target = parseFloat(((parseFloat(w.planned_kg||0)*parseFloat(it.percentage||0))/100).toFixed(3))
-        const first = (avail[it.ingredient_id]||[])[0]
-        pk[`${w.id}|${it.ingredient_id}`] = { batchId: first?.id||'', qty: String(target) }
-      })
-    })
-    setOrder(o); setRecipe(rec); setItems(ri); setAvailByIng(avail); setIngMap(im); setPicks(pk)
+    const pk = computeAutoFill(o.production_wsady||[], ri, avail)
+    setOrder(o); setRecipe(rec); setItems(ri); setAvailByIng(avail); setPicks(pk)
     setOperator(''); setForeman(''); setView('produce')
   }
 
-  const setPick = (key, field, val) => setPicks(p => ({ ...p, [key]: { ...p[key], [field]: val } }))
+  // alokacje i dostępność (na podstawie aktualnych picks)
+  const availMap = {}; Object.values(availByIng).flat().forEach(b => { availMap[b.id]=b.available })
+  const allocByBatch = {}; Object.values(picks).flat().forEach(l => { if (l.batchId) allocByBatch[l.batchId]=(allocByBatch[l.batchId]||0)+(parseFloat(l.qty)||0) })
+  const lotOf = {}; Object.values(availByIng).flat().forEach(b => { lotOf[b.id]=b.lot })
 
-  function lotCode(seq, bbno) {
-    const now=new Date(), yy=String(now.getFullYear()).slice(2), mm=String(now.getMonth()+1).padStart(2,'0'), dd=String(now.getDate()).padStart(2,'0')
-    return `L${yy}${mm}${dd}${seq}${String(bbno).padStart(2,'0')}`
-  }
+  const optionsFor = (ingId, cb, q) => (availByIng[ingId]||[]).map(b => {
+    const used = allocByBatch[b.id]||0, own = b.id===cb ? (parseFloat(q)||0) : 0
+    return { ...b, remaining: parseFloat((b.available-(used-own)).toFixed(3)) }
+  }).filter(b => b.remaining > 0.001 || b.id===cb)
+
+  const setLine = (key, idx, field, val) => setPicks(p => ({ ...p, [key]: p[key].map((l,i)=> i===idx?{...l,[field]:val}:l) }))
+  const addLine = key => setPicks(p => ({ ...p, [key]: [...(p[key]||[]), { batchId:'', qty:'' }] }))
+  const delLine = (key, idx) => setPicks(p => ({ ...p, [key]: p[key].length>1 ? p[key].filter((_,i)=>i!==idx) : p[key] }))
+  const przeliczWsad = w => setPicks(p => computeAutoFill(order.production_wsady||[], items, availByIng, w.id, p))
+  const przeliczAll = () => setPicks(computeAutoFill(order.production_wsady||[], items, availByIng))
 
   async function confirmProduce() {
     if (!order) return
-    // walidacja: każdy pick ma partię i ilość>0
+    // walidacja
     for (const w of (order.production_wsady||[])) {
       for (const it of items) {
-        const p = picks[`${w.id}|${it.ingredient_id}`]
-        if (!p || !p.batchId) { setError(`W${w.wsad_no}: wybierz partię dla „${it.ingredients?.code}”`); return }
-        if (!(parseFloat(p.qty)>0)) { setError(`W${w.wsad_no}: podaj ilość dla „${it.ingredients?.code}”`); return }
+        const lines = (picks[`${w.id}|${it.ingredient_id}`]||[]).filter(l => l.batchId && parseFloat(l.qty)>0)
+        if (lines.length===0) { setError(`W${w.wsad_no}: wybierz partię i ilość dla „${it.ingredients?.code}”`); return }
       }
+    }
+    for (const [bid, q] of Object.entries(allocByBatch)) {
+      if (q > (availMap[bid]||0) + 0.001) { setError(`Partia ${lotOf[bid]||''} przydzielona ponad stan (${q} > ${availMap[bid]||0} kg)`); return }
     }
     setSaving(true); setError('')
     const today = new Date().toISOString().slice(0,10)
     const seq = order.lot_number.split('-')[2] || ''
 
-    // 1) zużycie surowców (production_batch_items + wsad_id)
     const itemRows = []
     ;(order.production_wsady||[]).forEach(w => {
       items.forEach(it => {
-        const p = picks[`${w.id}|${it.ingredient_id}`]
-        itemRows.push({ production_batch_id: order.id, wsad_id: w.id, ingredient_id: it.ingredient_id, ingredient_batch_id: p.batchId, quantity_used_kg: parseFloat(p.qty) })
+        (picks[`${w.id}|${it.ingredient_id}`]||[]).forEach(l => {
+          if (l.batchId && parseFloat(l.qty)>0) itemRows.push({ production_batch_id: order.id, wsad_id: w.id, ingredient_id: it.ingredient_id, ingredient_batch_id: l.batchId, quantity_used_kg: parseFloat(l.qty) })
+        })
       })
     })
     const { error: e1 } = await supabase.from('production_batch_items').insert(itemRows)
     if (e1) { setError(e1.message); setSaving(false); return }
 
-    // 2) bigbagi (grupy wsadów po bb_plan_no) -> finished_goods luz + bigbag_wsady
-    const groups = {}
-    ;(order.production_wsady||[]).forEach(w => { const b=w.bb_plan_no||1; (groups[b]=groups[b]||[]).push(w) })
+    const groups = {}; (order.production_wsady||[]).forEach(w => { const b=w.bb_plan_no||1; (groups[b]=groups[b]||[]).push(w) })
     for (const bb of Object.keys(groups).map(Number).sort((a,b)=>a-b)) {
       const list = groups[bb].sort((a,b)=>a.wsad_no-b.wsad_no)
       const mass = parseFloat(list.reduce((s,w)=>s+parseFloat(w.planned_kg||0),0).toFixed(3))
       const bb_code = `${recipe.code}/${seq}/${list.map(w=>'W'+w.wsad_no).join('/')}/BB${String(bb).padStart(2,'0')}`
-      const lot = lotCode(seq, bb)
+      const now=new Date(), yy=String(now.getFullYear()).slice(2), mm=String(now.getMonth()+1).padStart(2,'0'), dd=String(now.getDate()).padStart(2,'0')
+      const lot = `L${yy}${mm}${dd}${seq}${String(bb).padStart(2,'0')}`
       const { data: fg, error: e2 } = await supabase.from('finished_goods').insert({
         production_batch_id: order.id, received_date: today, quantity_kg: mass,
         form:'luz', unit_type:'big_bag', unit_count:1, unit_weight_kg:mass,
@@ -118,7 +153,6 @@ export default function Produkcja() {
       await supabase.from('bigbag_wsady').insert(list.map(w => ({ finished_good_id: fg.id, wsad_id: w.id })))
     }
 
-    // 3) status zlecenia produkcji + operator/brygadzista + powiązane zlecenia sprzedaży
     await supabase.from('production_batches').update({ prod_stage:'wyprodukowana', produced_at:new Date().toISOString(), operator:operator||null, foreman:foreman||null }).eq('id', order.id)
     const orderIds = (order.production_order_sales||[]).map(x=>x.order_id)
     if (orderIds.length) await supabase.from('orders').update({ status:'wyprodukowane', produced_at:new Date().toISOString() }).in('id', orderIds)
@@ -126,8 +160,6 @@ export default function Produkcja() {
     setSaving(false); setView('list'); setOrder(null); load()
   }
 
-  // ── Podgląd bigbagów dla zlecenia (done) ──
-  const [bbCache, setBbCache] = useState({})
   async function toggleDone(id) {
     if (expanded===id) { setExpanded(null); return }
     setExpanded(id)
@@ -143,38 +175,50 @@ export default function Produkcja() {
       <div>
         <div className="page-header">
           <div><div className="page-title">Produkcja — {order.lot_number}</div><div className="page-sub">{recipe?.code} — {recipe?.name} · ręczny wybór partii surowców per wsad</div></div>
-          <button className="btn btn-sm" onClick={() => { setView('list'); setOrder(null) }}>← Wróć</button>
+          <div className="flex" style={{ gap:8 }}>
+            <button className="btn btn-sm" onClick={przeliczAll}>⟳ Przelicz wszystkie</button>
+            <button className="btn btn-sm" onClick={() => { setView('list'); setOrder(null) }}>← Wróć</button>
+          </div>
         </div>
         {error && <div className="err-box" style={{marginBottom:10}}>{error}</div>}
         {allergens.length>0 && <div className="warn-box" style={{marginBottom:10}}>Alergeny w recepturze: <b>{allergens.join(', ')}</b></div>}
 
-        {(order.production_wsady||[]).sort((a,b)=>a.wsad_no-b.wsad_no).map(w => (
+        {(order.production_wsady||[]).slice().sort((a,b)=>a.wsad_no-b.wsad_no).map(w => (
           <div className="card" key={w.id} style={{ marginBottom:12 }}>
-            <div style={{ fontWeight:600, color:'#0F6E56', marginBottom:8 }}>Wsad W{w.wsad_no} <span className="muted" style={{fontWeight:400,fontSize:12}}>· {fmt(w.planned_kg)} kg · → BB{String(w.bb_plan_no||1).padStart(2,'0')}</span></div>
-            <table style={{ width:'100%' }}>
-              <thead><tr><th>Składnik</th><th style={{textAlign:'right'}}>Cel (kg)</th><th>Partia (ręcznie)</th><th style={{textAlign:'right',width:110}}>Ilość (kg)</th></tr></thead>
-              <tbody>
-                {items.map(it => {
-                  const key=`${w.id}|${it.ingredient_id}`, p=picks[key]||{}
-                  const target=parseFloat(((parseFloat(w.planned_kg||0)*parseFloat(it.percentage||0))/100).toFixed(3))
-                  const opts=availByIng[it.ingredient_id]||[]
-                  return (
-                    <tr key={it.ingredient_id}>
-                      <td style={{fontSize:12,fontWeight:500}}>{it.ingredients?.code} — {it.ingredients?.name}{it.ingredients?.has_allergen && <span className="badge b-err" style={{fontSize:9,marginLeft:4}}>{it.ingredients.allergen_type}</span>}</td>
-                      <td style={{textAlign:'right',color:'#888'}}>{target.toFixed(3)}</td>
-                      <td>
-                        <select value={p.batchId||''} onChange={e=>setPick(key,'batchId',e.target.value)} style={{minWidth:200}}>
+            <div className="flex" style={{ justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+              <div style={{ fontWeight:600, color:'#0F6E56' }}>Wsad W{w.wsad_no} <span className="muted" style={{fontWeight:400,fontSize:12}}>· {fmt(w.planned_kg)} kg · → BB{String(w.bb_plan_no||1).padStart(2,'0')}</span></div>
+              <button className="btn btn-sm" onClick={()=>przeliczWsad(w)}>⟳ Przelicz wsad</button>
+            </div>
+            {items.map(it => {
+              const key=`${w.id}|${it.ingredient_id}`, lines=picks[key]||[]
+              const target=targetOf(w,it)
+              const alloc=lines.reduce((s,l)=>s+(parseFloat(l.qty)||0),0)
+              const short=parseFloat((target-alloc).toFixed(3))
+              return (
+                <div key={it.ingredient_id} style={{ borderTop:'0.5px solid #EEE', padding:'8px 0' }}>
+                  <div className="flex" style={{ justifyContent:'space-between', alignItems:'center', marginBottom:4 }}>
+                    <div style={{fontSize:12,fontWeight:500}}>{it.ingredients?.code} — {it.ingredients?.name}{it.ingredients?.has_allergen && <span className="badge b-err" style={{fontSize:9,marginLeft:4}}>{it.ingredients.allergen_type}</span>}</div>
+                    <div style={{fontSize:11}} className="muted">cel: <b>{target.toFixed(3)}</b> kg · przydzielono: <b style={{color: Math.abs(short)<=0.001?'#085041':'#A32D2D'}}>{alloc.toFixed(3)}</b>{Math.abs(short)>0.001 && <span style={{color:'#A32D2D'}}> (brak {short.toFixed(3)})</span>}
+                      <button className="btn btn-sm" style={{marginLeft:8,padding:'1px 7px'}} onClick={()=>addLine(key)}>+ partia</button>
+                    </div>
+                  </div>
+                  {(availByIng[it.ingredient_id]||[]).length===0 && <div className="badge b-err" style={{fontSize:9,marginBottom:4}}>brak tego surowca na magazynie</div>}
+                  {lines.map((l,li) => {
+                    const opts=optionsFor(it.ingredient_id, l.batchId, l.qty)
+                    return (
+                      <div key={li} className="flex" style={{ gap:8, marginBottom:4, alignItems:'center' }}>
+                        <select value={l.batchId||''} onChange={e=>setLine(key,li,'batchId',e.target.value)} style={{minWidth:230,flex:1}}>
                           <option value="">— wybierz partię —</option>
-                          {opts.map(b => <option key={b.id} value={b.id}>{b.lot} (dost. {b.available} kg)</option>)}
+                          {opts.map(b => <option key={b.id} value={b.id}>{b.lot} (pozostało {b.remaining} kg)</option>)}
                         </select>
-                        {opts.length===0 && <span className="badge b-err" style={{fontSize:9,marginLeft:4}}>brak na magazynie</span>}
-                      </td>
-                      <td style={{textAlign:'right'}}><input type="number" step="0.001" min="0" value={p.qty||''} onChange={e=>setPick(key,'qty',e.target.value)} style={{width:100,textAlign:'right'}} /></td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+                        <input type="number" step="0.001" min="0" value={l.qty||''} onChange={e=>setLine(key,li,'qty',e.target.value)} style={{width:100,textAlign:'right'}} placeholder="kg" />
+                        {lines.length>1 && <button className="btn btn-sm btn-danger" style={{padding:'2px 7px'}} onClick={()=>delLine(key,li)}>×</button>}
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            })}
           </div>
         ))}
 
