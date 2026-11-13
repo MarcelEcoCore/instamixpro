@@ -37,6 +37,7 @@ export default function Produkcja() {
   }
 
   const fmt = v => parseFloat(v||0).toLocaleString('pl-PL',{maximumFractionDigits:3})
+  const num = v => { const n = parseFloat(String(v==null?'':v).replace(',','.')); return isNaN(n)?0:n }
   const bbCountOf = o => new Set((o.production_wsady||[]).map(w=>w.bb_plan_no||1)).size
   const targetOf = (w, it) => parseFloat(((parseFloat(w.planned_kg||0)*parseFloat(it.percentage||0))/100).toFixed(3))
 
@@ -62,11 +63,11 @@ export default function Produkcja() {
   }
 
   const availMap = {}; Object.values(availByIng).flat().forEach(b => { availMap[b.id]=b.available })
-  const allocByBatch = {}; Object.values(picks).flat().forEach(l => { if (l.batchId) allocByBatch[l.batchId]=(allocByBatch[l.batchId]||0)+(parseFloat(l.qty)||0) })
+  const allocByBatch = {}; Object.values(picks).flat().forEach(l => { if (l.batchId) allocByBatch[l.batchId]=(allocByBatch[l.batchId]||0)+num(l.qty) })
   const lotOf = {}; Object.values(availByIng).flat().forEach(b => { lotOf[b.id]=b.lot })
 
   const optionsFor = (ingId, cb, q) => (availByIng[ingId]||[]).map(b => {
-    const used = allocByBatch[b.id]||0, own = b.id===cb ? (parseFloat(q)||0) : 0
+    const used = allocByBatch[b.id]||0, own = b.id===cb ? num(q) : 0
     return { ...b, remaining: parseFloat((b.available-(used-own)).toFixed(3)) }
   }).filter(b => b.remaining > 0.001 || b.id===cb)
 
@@ -81,7 +82,7 @@ export default function Produkcja() {
       const scopeIds = new Set(scopeWsady.map(w=>String(w.id)))
       Object.entries(prev).forEach(([key,lines]) => {
         if (scopeIds.has(key.split('|')[0])) return
-        lines.forEach(l => { if (l.batchId) remain[l.batchId]=parseFloat(((remain[l.batchId]??0)-(parseFloat(l.qty)||0)).toFixed(3)) })
+        lines.forEach(l => { if (l.batchId) remain[l.batchId]=parseFloat(((remain[l.batchId]??0)-num(l.qty)).toFixed(3)) })
       })
       const pk = { ...prev }
       scopeWsady.slice().sort((a,b)=>a.wsad_no-b.wsad_no).forEach(w => {
@@ -91,11 +92,13 @@ export default function Produkcja() {
           let need = targetOf(w,it)
           pk[key] = lines.map(l => {
             if (!l.batchId) return { ...l, qty:'' }
+            const existing = num(l.qty)
+            if (existing > 0) { remain[l.batchId]=parseFloat(((remain[l.batchId]??0)-existing).toFixed(3)); need=parseFloat((need-existing).toFixed(3)); return l }
             const rem = remain[l.batchId] ?? 0
             const take = Math.max(0, Math.min(need, rem))
             remain[l.batchId] = parseFloat((rem-take).toFixed(3))
             need = parseFloat((need-take).toFixed(3))
-            return { ...l, qty: String(parseFloat(take.toFixed(3))) }
+            return { ...l, qty: take>0 ? String(parseFloat(take.toFixed(3))) : '' }
           })
         })
       })
@@ -109,7 +112,7 @@ export default function Produkcja() {
     if (!order) return
     for (const w of (order.production_wsady||[])) {
       for (const it of items) {
-        const lines = (picks[`${w.id}|${it.ingredient_id}`]||[]).filter(l => l.batchId && parseFloat(l.qty)>0)
+        const lines = (picks[`${w.id}|${it.ingredient_id}`]||[]).filter(l => l.batchId && num(l.qty)>0)
         if (lines.length===0) { setError(`W${w.wsad_no}: wybierz partię i ilość dla „${it.ingredients?.code}”`); return }
       }
     }
@@ -124,7 +127,7 @@ export default function Produkcja() {
     ;(order.production_wsady||[]).forEach(w => {
       items.forEach(it => {
         (picks[`${w.id}|${it.ingredient_id}`]||[]).forEach(l => {
-          if (l.batchId && parseFloat(l.qty)>0) itemRows.push({ production_batch_id: order.id, wsad_id: w.id, ingredient_id: it.ingredient_id, ingredient_batch_id: l.batchId, quantity_used_kg: parseFloat(l.qty) })
+          if (l.batchId && num(l.qty)>0) itemRows.push({ production_batch_id: order.id, wsad_id: w.id, ingredient_id: it.ingredient_id, ingredient_batch_id: l.batchId, quantity_used_kg: num(l.qty) })
         })
       })
     })
@@ -170,7 +173,7 @@ export default function Produkcja() {
         <div className="page-header">
           <div><div className="page-title">Produkcja — {order.lot_number}</div><div className="page-sub">{recipe?.code} — {recipe?.name} · ręczny wybór partii surowców per wsad</div></div>
           <div className="flex" style={{ gap:8 }}>
-            <button className="btn btn-sm" onClick={przeliczAll} title="Wypełnia ilości dla wybranych przez Ciebie partii (nie wybiera partii)">⟳ Przelicz ilości</button>
+            <button className="btn btn-sm" style={{ background:'#1D9E75', color:'#fff', borderColor:'#1D9E75' }} onClick={przeliczAll} title="Wypełnia ilości dla wybranych przez Ciebie partii (nie wybiera partii)">⟳ Przelicz ilości</button>
             <button className="btn btn-sm" onClick={() => { setView('list'); setOrder(null) }}>← Wróć</button>
           </div>
         </div>
@@ -182,12 +185,12 @@ export default function Produkcja() {
           <div className="card" key={w.id} style={{ marginBottom:12 }}>
             <div className="flex" style={{ justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
               <div style={{ fontWeight:600, color:'#0F6E56' }}>Wsad W{w.wsad_no} <span className="muted" style={{fontWeight:400,fontSize:12}}>· {fmt(w.planned_kg)} kg · → BB{String(w.bb_plan_no||1).padStart(2,'0')}</span></div>
-              <button className="btn btn-sm" onClick={()=>przeliczWsad(w)} title="Wypełnia ilości dla wybranych partii w tym wsadzie">⟳ Przelicz ilości</button>
+              <button className="btn btn-sm" style={{ background:'#1D9E75', color:'#fff', borderColor:'#1D9E75' }} onClick={()=>przeliczWsad(w)} title="Wypełnia ilości dla wybranych partii w tym wsadzie">⟳ Przelicz ilości</button>
             </div>
             {items.map(it => {
               const key=`${w.id}|${it.ingredient_id}`, lines=picks[key]||[]
               const target=targetOf(w,it)
-              const alloc=lines.reduce((s,l)=>s+(parseFloat(l.qty)||0),0)
+              const alloc=lines.reduce((s,l)=>s+num(l.qty),0)
               const short=parseFloat((target-alloc).toFixed(3))
               return (
                 <div key={it.ingredient_id} style={{ borderTop:'0.5px solid #EEE', padding:'8px 0' }}>
@@ -206,7 +209,7 @@ export default function Produkcja() {
                           <option value="">— wybierz partię —</option>
                           {opts.map(b => <option key={b.id} value={b.id}>{b.lot} (pozostało {b.remaining} kg)</option>)}
                         </select>
-                        <input type="number" step="0.001" min="0" value={l.qty||''} onChange={e=>setLine(key,li,'qty',e.target.value)} style={{width:100,textAlign:'right'}} placeholder="kg" />
+                        <input type="text" inputMode="decimal" value={l.qty||''} onChange={e=>setLine(key,li,'qty',e.target.value)} style={{width:100,textAlign:'right'}} placeholder="kg" />
                         {lines.length>1 && <button className="btn btn-sm btn-danger" style={{padding:'2px 7px'}} onClick={()=>delLine(key,li)}>×</button>}
                       </div>
                     )
