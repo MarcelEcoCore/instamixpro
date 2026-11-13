@@ -15,7 +15,7 @@ const STATUS_COLORS = {
   w_realizacji:'b-warn', zrealizowane:'b-ok',
 }
 // statusy oferowane w szybkiej zmianie (nowy obieg)
-const FLOW = ['nowe','zaplanowane','w_produkcji','wyprodukowane','w_pakowaniu','spakowane','wyslane','anulowane']
+const FLOW = ['nowe','zaplanowane','wyprodukowane','spakowane','wyslane','anulowane']
 
 const EMPTY_FORM = { client_id:'', client:'', bom_id:'', qty_units:'', ship_date:'', notes:'' }
 
@@ -235,7 +235,7 @@ export default function Zlecenia() {
       </div>
 
       <div className="flex" style={{ marginBottom:10, gap:6, flexWrap:'wrap' }}>
-        {['aktywne','wszystkie','nowe','zaplanowane','w_produkcji','w_pakowaniu','spakowane','wyslane','anulowane'].map(s => (
+        {['aktywne','wszystkie','nowe','zaplanowane','wyprodukowane','spakowane','wyslane','anulowane'].map(s => (
           <button key={s} className="btn btn-sm" onClick={() => setFilterStatus(s)}
             style={{ background:filterStatus===s?'#1D9E75':undefined, color:filterStatus===s?'#fff':undefined, borderColor:filterStatus===s?'#1D9E75':undefined }}>
             {s==='aktywne'?'Aktywne':s==='wszystkie'?'Wszystkie':STATUS_LABELS[s]}
