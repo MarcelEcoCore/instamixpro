@@ -31,7 +31,7 @@ export default function MagazynWG() {
     const [{ data: vfg }, { data: fgx }, { data: wz }] = await Promise.all([
       supabase.from('v_finished_goods').select('*'),
       supabase.from('finished_goods').select('id,bb_code,lot_code,order_id,orders(order_number,bom(code_ext))'),
-      supabase.from('wz_documents').select('*').order('created_at',{ascending:false}).limit(30),
+      supabase.from('wz_documents').select('*, finished_goods(lot_code, production_batches(recipes(code,name)), orders(order_number, bom(code_ext)))').order('created_at',{ascending:false}).limit(50),
     ])
     const xmap={}; (fgx||[]).forEach(x=>{xmap[x.id]=x})
     const merged=(vfg||[]).map(g=>{ const x=xmap[g.id]||{}; return { ...g, bb_code:x.bb_code, lot_code:x.lot_code, order_id:x.order_id, order_number:x.orders?.order_number||g.order_number, bom_code:x.orders?.bom?.code_ext||null } })
@@ -85,6 +85,13 @@ export default function MagazynWG() {
     const qty=parseFloat(form.quantity_kg).toFixed(3)
     const html=`<!DOCTYPE html><html lang="pl"><head><meta charset="UTF-8"><title>WZ ${wzNumber}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:11px;padding:16px}.header{display:flex;justify-content:space-between;border-bottom:2px solid #0F6E56;padding-bottom:10px;margin-bottom:14px}.company{font-size:16px;font-weight:bold;color:#0F6E56}.wz-number{font-size:18px;font-weight:bold;color:#0F6E56;margin-top:4px}.info-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px}.info-box{border:1px solid #D3D1C7;border-radius:4px;padding:6px 10px}.info-label{font-size:9px;color:#888;text-transform:uppercase;margin-bottom:2px}.info-value{font-size:13px;font-weight:bold}table{width:100%;border-collapse:collapse;margin-bottom:14px}th{background:#0F6E56;color:#fff;padding:6px;font-size:9px;text-align:left;border:1px solid #085041}td{padding:6px;border:1px solid #D3D1C7;font-size:11px}.total td{background:#E1F5EE;font-weight:bold}.sig-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px;margin-top:16px}.sig-line{border-bottom:1px solid #333;margin-top:28px;margin-bottom:4px}.sig-label{font-size:9px;color:#888;text-transform:uppercase}@media print{@page{margin:10mm;size:A4}}</style></head><body><div class="header"><div><div class="company">InstantMix Pro</div><div style="font-size:13px;font-weight:bold;margin-top:3px">Wydanie Zewnętrzne (WZ)</div><div class="wz-number">${wzNumber}</div></div><div style="text-align:right;font-size:10px;color:#555">Data wydania: <strong>${form.issue_date}</strong><br>Wystawił: <strong>${profile?.full_name||'—'}</strong></div></div><div class="info-grid"><div class="info-box"><div class="info-label">Odbiorca</div><div class="info-value">${form.recipient||'—'}</div></div><div class="info-box"><div class="info-label">Przewoźnik</div><div class="info-value">${form.carrier||'—'}</div></div><div class="info-box"><div class="info-label">Nr zlecenia</div><div class="info-value">${good.order_number||'—'}</div></div><div class="info-box"><div class="info-label">Wyrób (BOM)</div><div class="info-value">${good.bom_code||good.recipe_code}</div></div><div class="info-box"><div class="info-label">LOT</div><div class="info-value">${good.lot_code||'—'}</div></div><div class="info-box"><div class="info-label">Produkt</div><div class="info-value">${good.recipe_code} — ${good.recipe_name}</div></div></div><table><thead><tr><th>Lp.</th><th>Wyrób</th><th>LOT</th><th style="text-align:right">Palety</th><th style="text-align:right">Opakowań</th><th style="text-align:right">Ilość (kg)</th></tr></thead><tbody><tr><td>1</td><td>${good.bom_code||good.recipe_name}</td><td>${good.lot_code||'—'}</td><td style="text-align:right">${form.pallets||'—'}</td><td style="text-align:right">${form.unit_count||'—'}</td><td style="text-align:right;font-weight:bold">${qty}</td></tr><tr class="total"><td colspan="5" style="text-align:right">RAZEM:</td><td style="text-align:right">${qty} kg</td></tr></tbody></table>${form.notes?`<div style="font-size:10px;color:#555;margin-bottom:10px"><strong>Uwagi:</strong> ${form.notes}</div>`:''}<div class="sig-grid"><div><div class="sig-label">Wydał (magazyn)</div><div class="sig-line"></div><div class="sig-label">Imię, nazwisko i podpis</div></div><div><div class="sig-label">Odebrał</div><div class="sig-line"></div><div class="sig-label">Imię, nazwisko i podpis</div></div><div><div class="sig-label">Zatwierdził</div><div class="sig-line"></div><div class="sig-label">Imię, nazwisko i podpis</div></div></div><script>window.onload=function(){window.print()}</script></body></html>`
     const w=window.open('','_blank'); w.document.write(html); w.document.close()
+  }
+
+  function printWzDoc(w){
+    const fg=w.finished_goods||{}
+    const good={ recipe_code:fg.production_batches?.recipes?.code||'', recipe_name:fg.production_batches?.recipes?.name||'', bom_code:fg.orders?.bom?.code_ext||null, lot_code:fg.lot_code||null, order_number:fg.orders?.order_number||null }
+    const form={ issue_date:w.issue_date, recipient:w.recipient, carrier:w.carrier, notes:w.notes, pallets:w.pallets, unit_count:w.unit_count, quantity_kg:w.quantity_kg }
+    printWz(w.wz_number, good, form)
   }
 
   const renderGroups = (groups, kind) => (
@@ -152,11 +159,20 @@ export default function MagazynWG() {
 
       <div style={{fontSize:13,fontWeight:600,color:'#5F5E5A',margin:'18px 0 8px'}}>Ostatnie WZ ({wzDocs.length})</div>
       <div style={{background:'#fff',border:'0.5px solid #D3D1C7',borderRadius:8,overflowX:'auto'}}>
-        <table style={{minWidth:560}}>
-          <thead><tr><th>Nr WZ</th><th>Data</th><th>Odbiorca</th><th style={{textAlign:'right'}}>Ilość (kg)</th></tr></thead>
+        <table style={{minWidth:720}}>
+          <thead><tr><th>Nr WZ</th><th>Data</th><th>Odbiorca</th><th>Produkt</th><th>LOT</th><th style={{textAlign:'right'}}>Ilość (kg)</th><th></th></tr></thead>
           <tbody>
-            {wzDocs.length===0 && <tr><td colSpan={4} style={{textAlign:'center',padding:16,color:'#888'}}>Brak</td></tr>}
-            {wzDocs.map(w=>(<tr key={w.id}><td><span className="lot">{w.wz_number}</span></td><td className="muted" style={{fontSize:11}}>{w.issue_date}</td><td style={{fontSize:12}}>{w.recipient||'—'}</td><td style={{textAlign:'right',fontWeight:500}}>{fmt(w.quantity_kg)}</td></tr>))}
+            {wzDocs.length===0 && <tr><td colSpan={7} style={{textAlign:'center',padding:16,color:'#888'}}>Brak</td></tr>}
+            {wzDocs.map(w=>{const fg=w.finished_goods||{};const prod=fg.orders?.bom?.code_ext||fg.production_batches?.recipes?.code||'—';const nm=fg.production_batches?.recipes?.name||'';return(
+              <tr key={w.id}>
+                <td><span className="lot">{w.wz_number}</span></td>
+                <td className="muted" style={{fontSize:11}}>{w.issue_date}</td>
+                <td style={{fontSize:12}}>{w.recipient||'—'}</td>
+                <td style={{fontSize:12,fontWeight:500}}>{prod}{nm&&<span className="muted" style={{fontSize:10}}> — {nm}</span>}</td>
+                <td><span className="lot" style={{fontSize:11}}>{fg.lot_code||'—'}</span></td>
+                <td style={{textAlign:'right',fontWeight:500}}>{fmt(w.quantity_kg)}</td>
+                <td>{canEdit && <button className="btn btn-sm" onClick={()=>printWzDoc(w)}>🖨 PDF</button>}</td>
+              </tr>)})}
           </tbody>
         </table>
       </div>
