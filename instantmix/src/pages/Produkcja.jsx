@@ -40,41 +40,6 @@ export default function Produkcja() {
   const bbCountOf = o => new Set((o.production_wsady||[]).map(w=>w.bb_plan_no||1)).size
   const targetOf = (w, it) => parseFloat(((parseFloat(w.planned_kg||0)*parseFloat(it.percentage||0))/100).toFixed(3))
 
-  // greedy: rozłóż cel na partie wg dostępnej puli remainingMap (najstarsze pierwsze)
-  function fillLines(ingBatches, target, remainingMap) {
-    let need = target; const lines = []
-    for (const b of (ingBatches||[])) {
-      if (need <= 0.001) break
-      const rem = remainingMap[b.id] ?? b.available
-      if (rem <= 0.001) continue
-      const take = Math.min(need, rem)
-      lines.push({ batchId: b.id, qty: String(parseFloat(take.toFixed(3))) })
-      remainingMap[b.id] = parseFloat((rem - take).toFixed(3))
-      need = parseFloat((need - take).toFixed(3))
-    }
-    if (lines.length === 0) lines.push({ batchId:'', qty:'' })
-    return lines
-  }
-
-  function computeAutoFill(wsadyList, its, avail, skipWsadId=null, basePicks=null) {
-    const remainingMap = {}
-    Object.values(avail).flat().forEach(b => { remainingMap[b.id] = b.available })
-    // odejmij alokacje innych wsadów (dla recompute pojedynczego wsadu)
-    if (basePicks) Object.entries(basePicks).forEach(([key, lines]) => {
-      const wid = key.split('|')[0]
-      if (skipWsadId && wid === String(skipWsadId)) return
-      lines.forEach(l => { if (l.batchId) remainingMap[l.batchId] = parseFloat(((remainingMap[l.batchId]??0) - (parseFloat(l.qty)||0)).toFixed(3)) })
-    })
-    const pk = basePicks ? { ...basePicks } : {}
-    const order = wsadyList.slice().sort((a,b)=>a.wsad_no-b.wsad_no)
-    for (const w of order) {
-      if (skipWsadId && String(w.id)!==String(skipWsadId)) continue
-      its.forEach(it => { pk[`${w.id}|${it.ingredient_id}`] = fillLines(avail[it.ingredient_id]||[], targetOf(w,it), remainingMap) })
-      if (!skipWsadId) continue
-    }
-    return pk
-  }
-
   async function openProduce(o) {
     setError('')
     const [{ data: rec }, { data: stock }, { data: used }] = await Promise.all([
@@ -89,12 +54,13 @@ export default function Produkcja() {
       if (a>0.001) (avail[s.ingredient_id]=avail[s.ingredient_id]||[]).push({ id:s.id, lot:s.delivery_lot, available:parseFloat(a.toFixed(3)) })
     })
     const ri = [...(rec?.recipe_items||[])].sort((a,b)=>(a.sort_order||0)-(b.sort_order||0))
-    const pk = computeAutoFill(o.production_wsady||[], ri, avail)
+    // BEZ sugerowania partii — puste linie, operator wybiera sam
+    const pk = {}
+    ;(o.production_wsady||[]).forEach(w => { ri.forEach(it => { pk[`${w.id}|${it.ingredient_id}`] = [{ batchId:'', qty:'' }] }) })
     setOrder(o); setRecipe(rec); setItems(ri); setAvailByIng(avail); setPicks(pk)
     setOperator(''); setForeman(''); setView('produce')
   }
 
-  // alokacje i dostępność (na podstawie aktualnych picks)
   const availMap = {}; Object.values(availByIng).flat().forEach(b => { availMap[b.id]=b.available })
   const allocByBatch = {}; Object.values(picks).flat().forEach(l => { if (l.batchId) allocByBatch[l.batchId]=(allocByBatch[l.batchId]||0)+(parseFloat(l.qty)||0) })
   const lotOf = {}; Object.values(availByIng).flat().forEach(b => { lotOf[b.id]=b.lot })
@@ -106,13 +72,41 @@ export default function Produkcja() {
 
   const setLine = (key, idx, field, val) => setPicks(p => ({ ...p, [key]: p[key].map((l,i)=> i===idx?{...l,[field]:val}:l) }))
   const addLine = key => setPicks(p => ({ ...p, [key]: [...(p[key]||[]), { batchId:'', qty:'' }] }))
-  const delLine = (key, idx) => setPicks(p => ({ ...p, [key]: p[key].length>1 ? p[key].filter((_,i)=>i!==idx) : p[key] }))
-  const przeliczWsad = w => setPicks(p => computeAutoFill(order.production_wsady||[], items, availByIng, w.id, p))
-  const przeliczAll = () => setPicks(computeAutoFill(order.production_wsady||[], items, availByIng))
+  const delLine = (key, idx) => setPicks(p => ({ ...p, [key]: p[key].length>1 ? p[key].filter((_,i)=>i!==idx) : [{batchId:'',qty:''}] }))
+
+  // Przelicz: wypełnia TYLKO ilości dla partii, które operator JUŻ wybrał (nie sugeruje partii)
+  function recompute(scopeWsady) {
+    setPicks(prev => {
+      const remain = {}; Object.values(availByIng).flat().forEach(b=>{ remain[b.id]=b.available })
+      const scopeIds = new Set(scopeWsady.map(w=>String(w.id)))
+      Object.entries(prev).forEach(([key,lines]) => {
+        if (scopeIds.has(key.split('|')[0])) return
+        lines.forEach(l => { if (l.batchId) remain[l.batchId]=parseFloat(((remain[l.batchId]??0)-(parseFloat(l.qty)||0)).toFixed(3)) })
+      })
+      const pk = { ...prev }
+      scopeWsady.slice().sort((a,b)=>a.wsad_no-b.wsad_no).forEach(w => {
+        items.forEach(it => {
+          const key=`${w.id}|${it.ingredient_id}`
+          const lines = prev[key]||[{batchId:'',qty:''}]
+          let need = targetOf(w,it)
+          pk[key] = lines.map(l => {
+            if (!l.batchId) return { ...l, qty:'' }
+            const rem = remain[l.batchId] ?? 0
+            const take = Math.max(0, Math.min(need, rem))
+            remain[l.batchId] = parseFloat((rem-take).toFixed(3))
+            need = parseFloat((need-take).toFixed(3))
+            return { ...l, qty: String(parseFloat(take.toFixed(3))) }
+          })
+        })
+      })
+      return pk
+    })
+  }
+  const przeliczWsad = w => recompute([w])
+  const przeliczAll = () => recompute(order.production_wsady||[])
 
   async function confirmProduce() {
     if (!order) return
-    // walidacja
     for (const w of (order.production_wsady||[])) {
       for (const it of items) {
         const lines = (picks[`${w.id}|${it.ingredient_id}`]||[]).filter(l => l.batchId && parseFloat(l.qty)>0)
@@ -176,18 +170,19 @@ export default function Produkcja() {
         <div className="page-header">
           <div><div className="page-title">Produkcja — {order.lot_number}</div><div className="page-sub">{recipe?.code} — {recipe?.name} · ręczny wybór partii surowców per wsad</div></div>
           <div className="flex" style={{ gap:8 }}>
-            <button className="btn btn-sm" onClick={przeliczAll}>⟳ Przelicz wszystkie</button>
+            <button className="btn btn-sm" onClick={przeliczAll} title="Wypełnia ilości dla wybranych przez Ciebie partii (nie wybiera partii)">⟳ Przelicz ilości</button>
             <button className="btn btn-sm" onClick={() => { setView('list'); setOrder(null) }}>← Wróć</button>
           </div>
         </div>
         {error && <div className="err-box" style={{marginBottom:10}}>{error}</div>}
         {allergens.length>0 && <div className="warn-box" style={{marginBottom:10}}>Alergeny w recepturze: <b>{allergens.join(', ')}</b></div>}
+        <div className="muted" style={{fontSize:12, marginBottom:10}}>Partie wybierasz ręcznie. „Przelicz ilości" rozkłada cel tylko na partie, które już wskazałeś — nie podpowiada partii.</div>
 
         {(order.production_wsady||[]).slice().sort((a,b)=>a.wsad_no-b.wsad_no).map(w => (
           <div className="card" key={w.id} style={{ marginBottom:12 }}>
             <div className="flex" style={{ justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
               <div style={{ fontWeight:600, color:'#0F6E56' }}>Wsad W{w.wsad_no} <span className="muted" style={{fontWeight:400,fontSize:12}}>· {fmt(w.planned_kg)} kg · → BB{String(w.bb_plan_no||1).padStart(2,'0')}</span></div>
-              <button className="btn btn-sm" onClick={()=>przeliczWsad(w)}>⟳ Przelicz wsad</button>
+              <button className="btn btn-sm" onClick={()=>przeliczWsad(w)} title="Wypełnia ilości dla wybranych partii w tym wsadzie">⟳ Przelicz ilości</button>
             </div>
             {items.map(it => {
               const key=`${w.id}|${it.ingredient_id}`, lines=picks[key]||[]
