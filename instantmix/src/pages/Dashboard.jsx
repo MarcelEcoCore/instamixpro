@@ -4,9 +4,7 @@ import { supabase } from '../lib/supabase'
 const ST = [
   { id:'nowe',          label:'Nowe',          color:'#0C447C' },
   { id:'zaplanowane',   label:'Zaplanowane',   color:'#0C447C' },
-  { id:'w_produkcji',   label:'W produkcji',   color:'#BA7517' },
   { id:'wyprodukowane', label:'Wyprodukowane', color:'#BA7517' },
-  { id:'w_pakowaniu',   label:'W pakowaniu',   color:'#BA7517' },
   { id:'spakowane',     label:'Do wysyłki',    color:'#0F6E56' },
 ]
 
@@ -48,7 +46,7 @@ export default function Dashboard() {
   const fmt = v => parseFloat(v||0).toLocaleString('pl-PL',{maximumFractionDigits:3})
 
   const kolejka = orders.filter(o => o.status==='zaplanowane').sort((a,b)=>(parseInt(a.production_priority||0))-(parseInt(b.production_priority||0)))
-  const doPak = orders.filter(o => ['wyprodukowane','w_pakowaniu'].includes(o.status))
+  const doPak = orders.filter(o => o.status==='wyprodukowane')
 
   return (
     <div>
@@ -76,7 +74,7 @@ export default function Dashboard() {
 
           <Panel title={`Do spakowania (${doPak.length})`} color="#BA7517">
             <SimpleTable cols={['Zlecenie','Klient','Wyrób','Status']} rows={doPak.slice(0,10).map(o => [
-              o.order_number||'—', klient(o), wyrob(o), o.status==='w_pakowaniu'?'W pakowaniu':'Wyprodukowane'
+              o.order_number||'—', klient(o), wyrob(o), 'Wyprodukowane'
             ])} empty="Brak" />
           </Panel>
 
