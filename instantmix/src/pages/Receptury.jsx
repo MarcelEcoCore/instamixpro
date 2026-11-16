@@ -144,17 +144,22 @@ export default function Receptury() {
   async function deleteRecipe(recipe) {
     setError('')
     // Sprawdź powiązania, które blokują usunięcie (bez kaskady w bazie)
-    const [{ count: bomCnt }, { count: prodCnt }] = await Promise.all([
+    const [{ count: bomCnt }, { count: prodCnt }, { count: ordCnt }] = await Promise.all([
       supabase.from('bom').select('id', { count:'exact', head:true }).eq('recipe_id', recipe.id),
       supabase.from('production_batches').select('id', { count:'exact', head:true }).eq('recipe_id', recipe.id),
+      supabase.from('orders').select('id', { count:'exact', head:true }).eq('recipe_id', recipe.id),
     ])
-    if ((bomCnt||0) > 0 || (prodCnt||0) > 0) {
-      setError(`Nie można usunąć — receptura jest powiązana z ${bomCnt||0} BOM i ${prodCnt||0} produkcjami. Najpierw usuń powiązane BOM-y i produkcje tej receptury.`)
+    const blockers = []
+    if (bomCnt) blockers.push(`${bomCnt} BOM`)
+    if (prodCnt) blockers.push(`${prodCnt} produkcji`)
+    if (ordCnt) blockers.push(`${ordCnt} zamówień sprzedaży`)
+    if (blockers.length) {
+      setError(`Nie można usunąć — receptura jest powiązana z: ${blockers.join(', ')}. Najpierw usuń te powiązania.`)
       return
     }
     await supabase.from('recipe_items').delete().eq('recipe_id', recipe.id)
     const { error: err } = await supabase.from('recipes').delete().eq('id', recipe.id)
-    if (err) { setError(err.code==='23503' ? 'Nie można usunąć — receptura jest jeszcze gdzieś używana.' : err.message); return }
+    if (err) { setError(err.code==='23503' ? 'Nie można usunąć — receptura jest jeszcze gdzieś powiązana (inna tabela). Daj znać, sprawdzę którą.' : err.message); return }
     setConfirmDelete(null); load()
   }
 
