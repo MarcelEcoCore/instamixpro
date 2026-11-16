@@ -28,6 +28,7 @@ export default function Planowanie() {
   const [bbCount, setBbCount] = useState('1')
   const [picks, setPicks] = useState({})          // `${uid}|${ingId}` -> [{batchId, qty}]
   const [plannedBy, setPlannedBy] = useState('')
+  const [producedDate, setProducedDate] = useState('')
   const [notes, setNotes] = useState('')
   const [nextSeq, setNextSeq] = useState('NNNN')
   const [saving, setSaving] = useState(false)
@@ -97,13 +98,13 @@ export default function Planowanie() {
     const r = selRecipe; const seq = await peekNextSeq()
     const totalKg = selOrders.reduce((s,id)=>{const o=salesNowe.find(x=>x.id===id);return s+parseFloat(o?.quantity_kg||0)},0)
     const w0=[{ uid:uid(), planned_kg: totalKg>0?String(parseFloat(totalKg.toFixed(3))):'', bb:'1' }]
-    setRecipeId(r||''); setAttached([...selOrders]); setNextSeq(seq); setWsady(w0); setBbCount('1'); setPlannedBy(''); setNotes(''); setError('')
+    setRecipeId(r||''); setAttached([...selOrders]); setNextSeq(seq); setWsady(w0); setBbCount('1'); setPlannedBy(''); setProducedDate(''); setNotes(''); setError('')
     if (r) await loadItemsFor(r, w0); else { setItems([]); setPicks({}) }
     setView('plan')
   }
   async function openStock() {
     const seq = await peekNextSeq(); const w0=[{ uid:uid(), planned_kg:'', bb:'1' }]
-    setRecipeId(''); setAttached([]); setNextSeq(seq); setWsady(w0); setBbCount('1'); setItems([]); setPicks({}); setPlannedBy(''); setNotes(''); setError('')
+    setRecipeId(''); setAttached([]); setNextSeq(seq); setWsady(w0); setBbCount('1'); setItems([]); setPicks({}); setPlannedBy(''); setProducedDate(''); setNotes(''); setError('')
     setView('plan')
   }
   async function onRecipeChange(rid) {
@@ -174,7 +175,7 @@ export default function Planowanie() {
     setSaving(true); setError('')
     const seq = await peekNextSeq(); const prodNo=`PROD-${new Date().getFullYear()}-${seq}`
     const clientName = recipe?.client || (attached.length ? (salesNowe.find(o=>o.id===attached[0])?.clients?.name||null) : null)
-    const { data: pb, error: e1 } = await supabase.from('production_batches').insert({ lot_number:prodNo, recipe_id:recipeId, quantity_kg:parseFloat(totalPlanned.toFixed(3)), client:clientName, prod_stage:'planowana', planned_by:plannedBy||profile?.full_name||null, notes:notes||null, created_by:profile?.id }).select().single()
+    const { data: pb, error: e1 } = await supabase.from('production_batches').insert({ lot_number:prodNo, recipe_id:recipeId, quantity_kg:parseFloat(totalPlanned.toFixed(3)), client:clientName, prod_stage:'planowana', planned_by:plannedBy||profile?.full_name||null, produced_at:producedDate||null, notes:notes||null, created_by:profile?.id }).select().single()
     if (e1) { setError(e1.message); setSaving(false); return }
     const wsadyRows = wsady.map((w,i)=>({ production_batch_id:pb.id, wsad_no:i+1, planned_kg:num(w.planned_kg), bb_plan_no:parseInt(w.bb)||1 }))
     const { data: wIns, error: e2 } = await supabase.from('production_wsady').insert(wsadyRows).select()
@@ -247,6 +248,7 @@ ${bbBlocks}
             </div>
             <div><label>Przypięte zlecenia</label><input value={attached.length?attached.map(id=>salesNowe.find(o=>o.id===id)?.order_number).join(', '):'na magazyn'} disabled /></div>
             <div><label>Planista</label><input value={plannedBy} onChange={e=>setPlannedBy(e.target.value)} placeholder="imię i nazwisko" /></div>
+            <div><label>Data produkcji (opc.)</label><input type="date" value={producedDate} onChange={e=>setProducedDate(e.target.value)} title="Ustaw przy wprowadzaniu historycznych produkcji" /></div>
           </div>
           <div style={{marginTop:8}}>
             <div className="flex" style={{justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
