@@ -25,6 +25,9 @@ export default function Magazyn() {
       .eq('status','aktywny').order('code')
     const { data: stock } = await supabase.from('v_stock').select('*')
     const { data: used } = await supabase.from('production_batch_items').select('ingredient_id,quantity_used_kg, production_batches!inner(id)')
+    const { data: curSup } = await supabase.from('supplier_ingredients').select('ingredient_id,default_price,suppliers(name)').eq('is_current',true)
+    const supMap = {}
+    for (const c of (curSup||[])) { supMap[c.ingredient_id] = { name:c.suppliers?.name||null, price: c.default_price!=null ? parseFloat(c.default_price) : null } }
 
     const stockMap = {}
     for (const s of (stock||[])) {
@@ -82,6 +85,8 @@ export default function Magazyn() {
         current:parseFloat(current.toFixed(3)),
         value:parseFloat(currentValue.toFixed(2)),
         avg_price: (stockMap[ing.id]?.avgDen>0) ? parseFloat((stockMap[ing.id].avgNum/stockMap[ing.id].avgDen).toFixed(2)) : null,
+        supplier_name: supMap[ing.id]?.name || null,
+        ref_price: supMap[ing.id]?.price ?? null,
         minimum, batch_count:batchCount, alert }
     })
     setRows(result)
@@ -197,17 +202,19 @@ export default function Magazyn() {
           <thead style={{ position:'sticky', top:0, zIndex:10, background:'#fff' }}><tr>
             <th style={{ width:32 }}></th>
             <th>Kod</th><th>Nazwa składnika</th>
+            <th>Dostawca (aktualny)</th>
             <th style={{ textAlign:'right' }}>Stan aktualny (kg)</th>
             <th style={{ textAlign:'right' }}>Wartość (zł)</th>
             <th style={{ textAlign:'right' }}>Śr. cena zakupu (zł/kg)</th>
+            <th style={{ textAlign:'right' }}>Cena ref. (zł/kg)</th>
             <th style={{ textAlign:'right' }}>Minimum (kg)</th>
             <th>Status</th>
             <th style={{ textAlign:'center' }}>Partie</th>
             <th>Alergen</th>
           </tr></thead>
           <tbody>
-            {loading && <tr><td colSpan={10} style={{ textAlign:'center', padding:32, color:'#888' }}><span className="spinner" /> Obliczam stany...</td></tr>}
-            {!loading && filtered.length===0 && <tr><td colSpan={10} style={{ textAlign:'center', padding:24, color:'#888' }}>Brak wyników</td></tr>}
+            {loading && <tr><td colSpan={12} style={{ textAlign:'center', padding:32, color:'#888' }}><span className="spinner" /> Obliczam stany...</td></tr>}
+            {!loading && filtered.length===0 && <tr><td colSpan={12} style={{ textAlign:'center', padding:24, color:'#888' }}>Brak wyników</td></tr>}
             {!loading && filtered.map(r => (
               <React.Fragment key={r.id}>
                 <tr style={alertRowStyle(r)}>
@@ -219,6 +226,7 @@ export default function Magazyn() {
                   </td>
                   <td><span className="lot">{r.code}</span></td>
                   <td style={{ fontWeight:500 }}>{r.name}</td>
+                  <td style={{ fontSize:12, color: r.supplier_name ? '#1a1a18' : '#888' }}>{r.supplier_name || '—'}</td>
                   <td style={{ textAlign:'right' }}>
                     <div style={{ fontWeight:700, fontSize:14 }}>{r.current.toFixed(3)}</div>
                     {stockBar(r)}
@@ -228,6 +236,9 @@ export default function Magazyn() {
                   </td>
                   <td style={{ textAlign:'right', color: r.avg_price != null ? '#0C447C' : '#888' }}>
                     {r.avg_price != null ? r.avg_price.toLocaleString('pl-PL', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' zł' : '—'}
+                  </td>
+                  <td style={{ textAlign:'right', color: r.ref_price != null ? '#0F6E56' : '#888' }}>
+                    {r.ref_price != null ? r.ref_price.toLocaleString('pl-PL', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' zł' : '—'}
                   </td>
                   <td style={{ textAlign:'right' }}>
                     {isAdmin ? (
@@ -256,7 +267,7 @@ export default function Magazyn() {
                 </tr>
                 {expandedId===r.id && (
                   <tr key={`${r.id}-detail`}>
-                    <td colSpan={10} style={{ padding:0, background:'#F9F8F5' }}>
+                    <td colSpan={12} style={{ padding:0, background:'#F9F8F5' }}>
                       <div style={{ padding:'8px 16px 10px 40px' }}>
                         <div style={{ fontSize:12, fontWeight:500, marginBottom:6, color:'#0F6E56' }}>Partie na stanie — {r.name}</div>
                         <div style={{ fontSize:11, color:'#5F5E5A', marginBottom:8 }}>Przyjęto: <b>{r.in_stock.toFixed(3)}</b> · Korekty: <b>{r.corrections_total>0?'+':''}{r.corrections_total.toFixed(3)}</b> · Zużyto: <b>{r.used_total.toFixed(3)}</b> · Stan: <b style={{color:'#0F6E56'}}>{r.current.toFixed(3)} kg</b></div>
