@@ -25,9 +25,6 @@ export default function Magazyn() {
       .eq('status','aktywny').order('code')
     const { data: stock } = await supabase.from('v_stock').select('*')
     const { data: used } = await supabase.from('production_batch_items').select('ingredient_id,quantity_used_kg, production_batches!inner(id)')
-    const { data: curSup } = await supabase.from('supplier_ingredients').select('ingredient_id,default_price,suppliers(name)').eq('is_current',true)
-    const supMap = {}
-    for (const c of (curSup||[])) { supMap[c.ingredient_id] = { name:c.suppliers?.name||null, price: c.default_price!=null ? parseFloat(c.default_price) : null } }
 
     const stockMap = {}
     for (const s of (stock||[])) {
@@ -85,8 +82,6 @@ export default function Magazyn() {
         current:parseFloat(current.toFixed(3)),
         value:parseFloat(currentValue.toFixed(2)),
         avg_price: (stockMap[ing.id]?.avgDen>0) ? parseFloat((stockMap[ing.id].avgNum/stockMap[ing.id].avgDen).toFixed(2)) : null,
-        supplier_name: supMap[ing.id]?.name || null,
-        ref_price: supMap[ing.id]?.price ?? null,
         minimum, batch_count:batchCount, alert }
     })
     setRows(result)
@@ -98,7 +93,12 @@ export default function Magazyn() {
     const { data } = await supabase
       .from('v_stock').select('*').eq('ingredient_id', ingredientId)
       .order('received_date', { ascending: true })
-    setBatchDetails(p => ({ ...p, [ingredientId]: data||[] }))
+    // dostawca konkretnej partii (ten, który dostarczył ją po danej cenie)
+    const { data: ibs } = await supabase
+      .from('ingredient_batches').select('id,supplier_name').eq('ingredient_id', ingredientId)
+    const supByBatch = {}; for (const b of (ibs||[])) supByBatch[b.id] = b.supplier_name || null
+    const withSup = (data||[]).map(b => ({ ...b, supplier_name: b.supplier_name ?? supByBatch[b.id] ?? null }))
+    setBatchDetails(p => ({ ...p, [ingredientId]: withSup }))
     setExpandedId(ingredientId)
   }
 
@@ -264,10 +264,6 @@ export default function Magazyn() {
                     <td colSpan={10} style={{ padding:0, background:'#F9F8F5' }}>
                       <div style={{ padding:'8px 16px 10px 40px' }}>
                         <div style={{ fontSize:12, fontWeight:500, marginBottom:6, color:'#0F6E56' }}>Partie na stanie — {r.name}</div>
-                        <div style={{ display:'flex', gap:16, flexWrap:'wrap', marginBottom:8, padding:'6px 10px', background:'#fff', border:'0.5px solid #E3E1D8', borderRadius:6, fontSize:12 }}>
-                          <span>Aktualny dostawca: <b style={{ color: r.supplier_name ? '#0F6E56' : '#888' }}>{r.supplier_name || '— nieprzypisany'}</b></span>
-                          <span>Cena referencyjna: <b style={{ color: r.ref_price != null ? '#0F6E56' : '#888' }}>{r.ref_price != null ? r.ref_price.toLocaleString('pl-PL',{minimumFractionDigits:2,maximumFractionDigits:2})+' zł/kg' : '—'}</b></span>
-                        </div>
                         <div style={{ fontSize:11, color:'#5F5E5A', marginBottom:8 }}>Przyjęto: <b>{r.in_stock.toFixed(3)}</b> · Korekty: <b>{r.corrections_total>0?'+':''}{r.corrections_total.toFixed(3)}</b> · Zużyto: <b>{r.used_total.toFixed(3)}</b> · Stan: <b style={{color:'#0F6E56'}}>{r.current.toFixed(3)} kg</b></div>
                         {!batchDetails[r.id] || batchDetails[r.id].length===0 ? (
                           <div className="muted" style={{ fontSize:12 }}>Brak dopuszczonych partii na stanie</div>
@@ -275,7 +271,9 @@ export default function Magazyn() {
                           <table style={{ width:'auto', minWidth:500 }}>
                             <thead style={{ position:'sticky', top:0, zIndex:10, background:'#fff' }}><tr>
                               <th>Nr partii dostawy</th><th>Data przyjęcia</th><th>Data ważności</th>
+                              <th>Dostawca</th>
                               <th style={{ textAlign:'right' }}>Stan (kg)</th>
+                              <th style={{ textAlign:'right' }}>Cena (zł/kg)</th>
                               <th style={{ textAlign:'right' }}>Wartość (zł)</th>
                               <th>Status</th>
                             </tr></thead>
@@ -293,10 +291,16 @@ export default function Magazyn() {
                                       {isExpiring && <span className="badge b-warn" style={{ marginLeft:6, fontSize:10 }}>Wygasa wkrótce</span>}
                                       {isExpired && <span className="badge b-err" style={{ marginLeft:6, fontSize:10 }}>Przeterminowana</span>}
                                     </td>
+                                    <td style={{ fontSize:12, color: b.supplier_name ? '#1a1a18' : '#888' }}>{b.supplier_name || '—'}</td>
                                     <td style={{ textAlign:'right' }}>
                                       {hasCorr && <span style={{ textDecoration:'line-through', color:'#888', marginRight:6, fontSize:11 }}>{parseFloat(b.original_kg).toFixed(3)}</span>}
                                       <span style={{ fontWeight:700, color: hasCorr ? '#A32D2D' : undefined }}>{parseFloat(b.current_kg).toFixed(3)}</span>
                                       {hasCorr && <span style={{ fontSize:10, color:'#A32D2D', marginLeft:4 }}>({parseFloat(b.corrections_kg)>0?'+':''}{parseFloat(b.corrections_kg).toFixed(3)})</span>}
+                                    </td>
+                                    <td style={{ textAlign:'right', color: (parseFloat(b.unit_price_pln||0) > 0) ? '#0C447C' : '#888', fontSize:12 }}>
+                                      {parseFloat(b.unit_price_pln||0) > 0
+                                        ? parseFloat(b.unit_price_pln).toLocaleString('pl-PL',{minimumFractionDigits:2,maximumFractionDigits:2})
+                                        : '—'}
                                     </td>
                                     <td style={{ textAlign:'right', color: (parseFloat(b.unit_price_pln||0) > 0) ? '#3C3489' : '#888', fontSize:12 }}>
                                       {parseFloat(b.unit_price_pln||0) > 0
