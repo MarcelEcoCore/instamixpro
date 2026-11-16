@@ -187,9 +187,11 @@ export default function Produkcja() {
     await supabase.from('finished_goods').delete().eq('production_batch_id', p.id)
     // 5) usuń operacje pakowania (już bez powiązań)
     if (packIds.length) await supabase.from('packing_operations').delete().in('id', packIds)
-    // 6) zlecenia sprzedaży → wróć na „nowe"
+    // 6) zlecenia sprzedaży → wróć na „nowe" + odczep bezpośredni link production_batch_id
     const orderIds = (p.production_order_sales||[]).map(x=>x.order_id)
     if (orderIds.length) await supabase.from('orders').update({ status:'nowe', produced_at:null, updated_at:new Date().toISOString() }).in('id', orderIds)
+    // kolumna orders.production_batch_id (stare, bezpośrednie powiązanie) — musi zostać wyzerowana, inaczej blokuje usunięcie
+    await supabase.from('orders').update({ production_batch_id:null, status:'nowe', produced_at:null, updated_at:new Date().toISOString() }).eq('production_batch_id', p.id)
     // 7) pozycje zużycia surowców
     await supabase.from('production_batch_items').delete().eq('production_batch_id', p.id)
     // 8) na końcu sama produkcja (kaskada: wsady, bigbag_wsady, order_sales)
