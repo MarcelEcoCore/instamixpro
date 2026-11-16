@@ -58,6 +58,22 @@ export default function Identyfikowalnosc() {
 
   const fmt = v => parseFloat(v||0).toLocaleString('pl-PL',{maximumFractionDigits:3})
   const pdate = p => { const d = p.produced_at || p.accepted_at || p.created_at; return d ? String(d).slice(0,10) : '—' }
+  const itemRow = (r,i) => (
+    <tr key={i}>
+      <td><span className="lot" style={{ fontSize:11 }}>{r.ingredients?.code||'—'}</span></td>
+      <td style={{ fontSize:12 }}>{r.ingredients?.name||'—'}</td>
+      <td style={{ fontFamily:'monospace', fontSize:12 }}>{r.ingredient_batches?.delivery_lot||'—'}</td>
+      <td style={{ fontSize:12 }}>{r.ingredient_batches?.supplier_name||'—'}</td>
+      <td className="muted" style={{ fontSize:12 }}>{r.ingredient_batches?.expiry_date||'—'}</td>
+      <td style={{ textAlign:'right', fontWeight:500 }}>{fmt(r.quantity_used_kg)}</td>
+    </tr>
+  )
+  const itemTable = list => (
+    <table style={{ width:'auto', minWidth:620, marginTop:4 }}>
+      <thead><tr><th>Kod</th><th>Składnik</th><th>Nr partii dostawy</th><th>Dostawca</th><th>Ważny do</th><th style={{ textAlign:'right' }}>Zużyto (kg)</th></tr></thead>
+      <tbody>{list.length===0 ? <tr><td colSpan={6} className="muted" style={{ fontSize:12 }}>brak pozycji</td></tr> : list.map(itemRow)}</tbody>
+    </table>
+  )
 
   const filtered = prods.filter(p => {
     const q = search.trim().toLowerCase()
@@ -78,10 +94,15 @@ export default function Identyfikowalnosc() {
     const d = detail[p.id]
     if (!d) return
     const byWsad={}; d.items.forEach(r=>{ (byWsad[r.wsad_id]=byWsad[r.wsad_id]||[]).push(r) })
-    const wsadRows = (d.wsady||[]).map(w=>{
-      const rows=(byWsad[w.id]||[]).map(r=>`<tr><td>${r.ingredients?.code||''}</td><td>${r.ingredients?.name||''}</td><td style="font-family:monospace">${r.ingredient_batches?.delivery_lot||'—'}</td><td>${r.ingredient_batches?.supplier_name||'—'}</td><td>${r.ingredient_batches?.expiry_date||'—'}</td><td style="text-align:right">${parseFloat(r.quantity_used_kg||0).toFixed(3)}</td></tr>`).join('')
+    const rowHtml = r=>`<tr><td>${r.ingredients?.code||''}</td><td>${r.ingredients?.name||''}</td><td style="font-family:monospace">${r.ingredient_batches?.delivery_lot||'—'}</td><td>${r.ingredient_batches?.supplier_name||'—'}</td><td>${r.ingredient_batches?.expiry_date||'—'}</td><td style="text-align:right">${parseFloat(r.quantity_used_kg||0).toFixed(3)}</td></tr>`
+    const wsadIds = new Set((d.wsady||[]).map(w=>w.id))
+    const orphan = (d.items||[]).filter(r => !r.wsad_id || !wsadIds.has(r.wsad_id))
+    let wsadRows = (d.wsady||[]).map(w=>{
+      const rows=(byWsad[w.id]||[]).map(rowHtml).join('')
       return `<tr class="w"><td colspan="6">Wsad W${w.wsad_no} — plan ${parseFloat(w.planned_kg||0).toFixed(3)} kg${w.actual_kg?` · rzeczywiście ${parseFloat(w.actual_kg).toFixed(3)} kg`:''}</td></tr>${rows||'<tr><td colspan=6 style="color:#888">brak pozycji</td></tr>'}`
     }).join('')
+    if (orphan.length) wsadRows += `${(d.wsady||[]).length?'<tr class="w"><td colspan="6">Pozycje bez przypisanego wsadu</td></tr>':''}${orphan.map(rowHtml).join('')}`
+    if (!wsadRows) wsadRows = '<tr><td colspan=6 style="color:#888">brak zapisanego zużycia surowców</td></tr>'
     const luzRows=(luzByProd[p.id]||[]).map(b=>`<tr><td style="font-family:monospace">${b.bb_code||'—'}</td><td style="font-family:monospace">${b.lot_code||'—'}</td><td style="text-align:right">${parseFloat(b.quantity_kg||0).toFixed(3)} kg</td></tr>`).join('')||'<tr><td colspan=3 style="color:#888">brak</td></tr>'
     const packRows=(d.packed||[]).map(b=>`<tr><td style="font-family:monospace">${b.packing_operations?.pack_number||'—'}</td><td style="font-family:monospace">${b.lot_code||'—'}</td><td>${b.orders?.order_number||'—'}</td><td style="text-align:right">${b.unit_count||0} szt · ${parseFloat(b.quantity_kg||0).toFixed(3)} kg</td><td>${b.packing_operations?.packing_date||'—'}</td></tr>`).join('')||'<tr><td colspan=5 style="color:#888">brak</td></tr>'
     const html=`<!DOCTYPE html><html lang="pl"><head><meta charset="UTF-8"><title>Identyfikowalność ${p.lot_number}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:11px;padding:16px;color:#1a1a18}.header{display:flex;justify-content:space-between;border-bottom:2px solid #0F6E56;padding-bottom:10px;margin-bottom:12px}.company{font-size:16px;font-weight:bold;color:#0F6E56}.lot{font-size:14px;font-weight:bold;color:#0F6E56}h3{font-size:12px;margin:12px 0 4px;color:#0F6E56}table{width:100%;border-collapse:collapse;margin-bottom:6px}th{background:#F1EFE8;font-size:9px;text-transform:uppercase;padding:4px 6px;border:1px solid #D3D1C7;text-align:left}td{padding:4px 6px;border:1px solid #D3D1C7;font-size:10px}.w td{background:#E1F5EE;font-weight:bold}@media print{@page{margin:10mm;size:A4}}</style></head><body>
@@ -165,30 +186,34 @@ export default function Identyfikowalnosc() {
                               <button className="btn btn-sm" onClick={()=>printTrace(p)}>🖨 Karta IFS (PDF)</button>
                             </div>
 
-                            {/* 1. Surowce wg wsadów */}
-                            <div style={{ fontSize:11, fontWeight:600, color:'#5F5E5A', margin:'4px 0' }}>1. Surowce (wejście) — wg wsadów</div>
-                            {(d.wsady||[]).length===0 && <div className="muted" style={{ fontSize:12 }}>Brak wsadów / pozycji.</div>}
-                            {(d.wsady||[]).map(w => (
-                              <div key={w.id} style={{ marginBottom:8 }}>
-                                <div style={{ fontSize:11, fontWeight:600, background:'#E1F5EE', padding:'3px 8px', borderRadius:4 }}>Wsad W{w.wsad_no} — plan {fmt(w.planned_kg)} kg{w.actual_kg?` · rzecz. ${fmt(w.actual_kg)} kg`:''}</div>
-                                <table style={{ width:'auto', minWidth:620, marginTop:4 }}>
-                                  <thead><tr><th>Kod</th><th>Składnik</th><th>Nr partii dostawy</th><th>Dostawca</th><th>Ważny do</th><th style={{ textAlign:'right' }}>Zużyto (kg)</th></tr></thead>
-                                  <tbody>
-                                    {(byWsad[w.id]||[]).length===0 && <tr><td colSpan={6} className="muted" style={{ fontSize:12 }}>brak pozycji</td></tr>}
-                                    {(byWsad[w.id]||[]).map((r,i) => (
-                                      <tr key={i}>
-                                        <td><span className="lot" style={{ fontSize:11 }}>{r.ingredients?.code}</span></td>
-                                        <td style={{ fontSize:12 }}>{r.ingredients?.name}</td>
-                                        <td style={{ fontFamily:'monospace', fontSize:12 }}>{r.ingredient_batches?.delivery_lot||'—'}</td>
-                                        <td style={{ fontSize:12 }}>{r.ingredient_batches?.supplier_name||'—'}</td>
-                                        <td className="muted" style={{ fontSize:12 }}>{r.ingredient_batches?.expiry_date||'—'}</td>
-                                        <td style={{ textAlign:'right', fontWeight:500 }}>{fmt(r.quantity_used_kg)}</td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            ))}
+                            {/* 1. Surowce — wg wsadów, a pozycje bez wsadu i tak pokazujemy */}
+                            {(() => {
+                              const items = d.items || []
+                              const wsadIds = new Set((d.wsady||[]).map(w=>w.id))
+                              const orphan = items.filter(r => !r.wsad_id || !wsadIds.has(r.wsad_id))
+                              return (
+                                <>
+                                  <div style={{ fontSize:11, fontWeight:600, color:'#5F5E5A', margin:'4px 0' }}>1. Surowce (wejście) — zużyte partie</div>
+                                  {items.length===0 && <div className="warn-box" style={{ fontSize:12 }}>
+                                    Ta produkcja nie ma zapisanego zużycia surowców (pusta tabela <i>production_batch_items</i>). Partie przypisuje się przy <b>planowaniu zlecenia</b> (wybór partii do wsadów) — jeśli zlecenie powstało inną drogą, ślad surowców będzie pusty.
+                                  </div>}
+                                  {/* wsady z pozycjami */}
+                                  {(d.wsady||[]).map(w => (
+                                    <div key={w.id} style={{ marginBottom:8 }}>
+                                      <div style={{ fontSize:11, fontWeight:600, background:'#E1F5EE', padding:'3px 8px', borderRadius:4 }}>Wsad W{w.wsad_no} — plan {fmt(w.planned_kg)} kg{w.actual_kg?` · rzecz. ${fmt(w.actual_kg)} kg`:''}</div>
+                                      {itemTable(byWsad[w.id]||[])}
+                                    </div>
+                                  ))}
+                                  {/* pozycje bez przypisanego wsadu (lub gdy wsadów brak) */}
+                                  {orphan.length>0 && (
+                                    <div style={{ marginBottom:8 }}>
+                                      {(d.wsady||[]).length>0 && <div style={{ fontSize:11, fontWeight:600, background:'#F1EFE8', padding:'3px 8px', borderRadius:4 }}>Pozycje bez przypisanego wsadu</div>}
+                                      {itemTable(orphan)}
+                                    </div>
+                                  )}
+                                </>
+                              )
+                            })()}
 
                             {/* 2. Półprodukt */}
                             <div style={{ fontSize:11, fontWeight:600, color:'#5F5E5A', margin:'10px 0 4px' }}>2. Półprodukt — bigbagi (LOT)</div>
