@@ -12,6 +12,7 @@ export default function Identyfikowalnosc() {
   const [packedByProd, setPackedByProd] = useState({})
   const [lotsByProd, setLotsByProd] = useState({})   // production_id -> Set(nr partii surowca)
   const [loading, setLoading] = useState(true)
+  const [loadErr, setLoadErr] = useState('')
   const [search, setSearch] = useState('')
   const [expanded, setExpanded] = useState(null)
   const [detail, setDetail] = useState({})           // production_id -> { wsady, items, packed }
@@ -19,16 +20,22 @@ export default function Identyfikowalnosc() {
   useEffect(() => { load() }, [])
 
   async function load() {
-    setLoading(true)
-    const [{ data: pb }, { data: luz }, { data: pack }, { data: idx }] = await Promise.all([
-      supabase.from('production_batches')
-        .select('id,lot_number,recipe_id,quantity_kg,client,prod_stage,planned_by,operator,accepted_by,produced_at,accepted_at,recipes(code,name,version),production_order_sales(orders(order_number))')
-        .order('produced_at',{ascending:false, nullsFirst:false}).limit(400),
+    setLoading(true); setLoadErr('')
+    // 1) Nagłówki produkcji — proste zapytanie (bez zagnieżdżeń, które mogłyby wysypać całość)
+    const { data: pb, error: e1 } = await supabase.from('production_batches')
+      .select('id,lot_number,recipe_id,quantity_kg,client,prod_stage,planned_by,operator,accepted_by,produced_at,accepted_at,recipes(code,name,version)')
+      .order('lot_number',{ascending:false}).limit(500)
+    if (e1) { setLoadErr('Nie udało się wczytać produkcji: '+e1.message); setProds([]); setLoading(false); return }
+
+    // 2) Reszta — każde osobno, błąd jednego nie kasuje listy produkcji
+    const [{ data: luz }, { data: pack }, { data: idx }, { data: pos }] = await Promise.all([
       supabase.from('finished_goods').select('production_batch_id,bb_code,lot_code,bb_no,quantity_kg').eq('form','luz'),
       supabase.from('finished_goods').select('production_batch_id,lot_code,quantity_kg,unit_count,order_id').eq('form','spakowane'),
       supabase.from('production_batch_items').select('production_batch_id, ingredient_batches(delivery_lot)'),
+      supabase.from('production_order_sales').select('production_batch_id, orders(order_number)'),
     ])
-    setProds(pb||[])
+    const posMap={}; (pos||[]).forEach(x=>{ (posMap[x.production_batch_id]=posMap[x.production_batch_id]||[]).push(x) })
+    setProds((pb||[]).map(p => ({ ...p, production_order_sales: posMap[p.id]||[] })))
     const lm={}; (luz||[]).forEach(x=>{ (lm[x.production_batch_id]=lm[x.production_batch_id]||[]).push(x) })
     const pm={}; (pack||[]).forEach(x=>{ (pm[x.production_batch_id]=pm[x.production_batch_id]||[]).push(x) })
     const xm={}; (idx||[]).forEach(x=>{ const lot=x.ingredient_batches?.delivery_lot; if(lot){ (xm[x.production_batch_id]=xm[x.production_batch_id]||new Set()).add(lot) } })
@@ -96,6 +103,19 @@ export default function Identyfikowalnosc() {
           <button className="btn btn-sm" onClick={load}>↻</button>
         </div>
       </div>
+
+      {loadErr && <div className="err-box" style={{ marginBottom:10 }}>{loadErr}</div>}
+
+      <div className="info-box" style={{ marginBottom:10, fontSize:12 }}>
+        <b>Jak to działa:</b> strona pokazuje <b>wszystkie wykonane produkcje</b> z bazy (nic nie trzeba importować — dane zaciągają się z zakładki Produkcja/Planowanie).
+        Kliknij <b>▼ / „Ślad"</b> przy produkcji, aby rozwinąć pełny łańcuch: surowce z nr partii → bigbagi → pakowanie.
+        Pole wyszukiwania u góry przyjmuje dowolny numer: nr produkcji, <b>nr partii surowca</b> (pokaże, w których produkcjach go użyto), LOT bigbaga lub LOT wyrobu.
+        {!loading && <> Produkcji w systemie: <b>{prods.length}</b>.</>}
+      </div>
+
+      {!loading && prods.length===0 && !loadErr && <div className="warn-box" style={{ marginBottom:10, fontSize:12 }}>
+        Brak zapisanych produkcji w bazie. Produkcje powstają w zakładce <b>Planowanie zleceń</b> (plan) i <b>Produkcja</b> (wykonanie) — gdy pojawią się tam pierwsze zlecenia produkcyjne, automatycznie wyświetlą się tutaj.
+      </div>}
 
       {search.trim() && <div className="info-box" style={{ marginBottom:10, fontSize:12 }}>
         Wyników: <b>{filtered.length}</b>. Wpisany numer dopasowywany jest do: nr produkcji, produktu, <b>nr partii surowca</b> (ślad wstecz), LOT bigbaga oraz LOT wyrobu spakowanego.
