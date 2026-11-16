@@ -21,9 +21,9 @@ export default function Identyfikowalnosc() {
 
   async function load() {
     setLoading(true); setLoadErr('')
-    // 1) Nagłówki produkcji — proste zapytanie (bez zagnieżdżeń, które mogłyby wysypać całość)
+    // 1) Nagłówki produkcji — select('*') nie wysypie się na brakującej kolumnie; pola czytamy odpornie
     const { data: pb, error: e1 } = await supabase.from('production_batches')
-      .select('id,lot_number,recipe_id,quantity_kg,client,prod_stage,planned_by,operator,accepted_by,produced_at,accepted_at,recipes(code,name,version)')
+      .select('*, recipes(code,name,version)')
       .order('lot_number',{ascending:false}).limit(500)
     if (e1) { setLoadErr('Nie udało się wczytać produkcji: '+e1.message); setProds([]); setLoading(false); return }
 
@@ -57,6 +57,7 @@ export default function Identyfikowalnosc() {
   }
 
   const fmt = v => parseFloat(v||0).toLocaleString('pl-PL',{maximumFractionDigits:3})
+  const pdate = p => { const d = p.produced_at || p.accepted_at || p.created_at; return d ? String(d).slice(0,10) : '—' }
 
   const filtered = prods.filter(p => {
     const q = search.trim().toLowerCase()
@@ -85,7 +86,7 @@ export default function Identyfikowalnosc() {
     const packRows=(d.packed||[]).map(b=>`<tr><td style="font-family:monospace">${b.packing_operations?.pack_number||'—'}</td><td style="font-family:monospace">${b.lot_code||'—'}</td><td>${b.orders?.order_number||'—'}</td><td style="text-align:right">${b.unit_count||0} szt · ${parseFloat(b.quantity_kg||0).toFixed(3)} kg</td><td>${b.packing_operations?.packing_date||'—'}</td></tr>`).join('')||'<tr><td colspan=5 style="color:#888">brak</td></tr>'
     const html=`<!DOCTYPE html><html lang="pl"><head><meta charset="UTF-8"><title>Identyfikowalność ${p.lot_number}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:11px;padding:16px;color:#1a1a18}.header{display:flex;justify-content:space-between;border-bottom:2px solid #0F6E56;padding-bottom:10px;margin-bottom:12px}.company{font-size:16px;font-weight:bold;color:#0F6E56}.lot{font-size:14px;font-weight:bold;color:#0F6E56}h3{font-size:12px;margin:12px 0 4px;color:#0F6E56}table{width:100%;border-collapse:collapse;margin-bottom:6px}th{background:#F1EFE8;font-size:9px;text-transform:uppercase;padding:4px 6px;border:1px solid #D3D1C7;text-align:left}td{padding:4px 6px;border:1px solid #D3D1C7;font-size:10px}.w td{background:#E1F5EE;font-weight:bold}@media print{@page{margin:10mm;size:A4}}</style></head><body>
 <div class="header"><div><div class="company">InstantMix Pro</div><div style="font-weight:bold;margin-top:3px">Karta identyfikowalności (IFS)</div><div class="lot" style="margin-top:3px">${p.lot_number}</div></div>
-<div style="text-align:right;font-size:10px;color:#555"><div>Produkt: <b>${p.recipes?.code||''} — ${p.recipes?.name||''}</b></div><div>Masa: <b>${parseFloat(p.quantity_kg||0).toFixed(3)} kg</b></div><div>Data produkcji: ${p.produced_at?p.produced_at.slice(0,10):'—'}</div><div>Data druku: ${new Date().toLocaleDateString('pl-PL')}</div></div></div>
+<div style="text-align:right;font-size:10px;color:#555"><div>Produkt: <b>${p.recipes?.code||''} — ${p.recipes?.name||''}</b></div><div>Masa: <b>${parseFloat(p.quantity_kg||0).toFixed(3)} kg</b></div><div>Data produkcji: ${pdate(p)}</div><div>Data druku: ${new Date().toLocaleDateString('pl-PL')}</div></div></div>
 <h3>1. Surowce (wejście) — wg wsadów</h3><table><thead><tr><th>Kod</th><th>Składnik</th><th>Nr partii dostawy</th><th>Dostawca</th><th>Ważny do</th><th style="text-align:right">Zużyto (kg)</th></tr></thead><tbody>${wsadRows||'<tr><td colspan=6 style="color:#888">brak danych</td></tr>'}</tbody></table>
 <h3>2. Półprodukt — bigbagi (LOT)</h3><table><thead><tr><th>Kod bigbaga</th><th>LOT</th><th style="text-align:right">Masa</th></tr></thead><tbody>${luzRows}</tbody></table>
 <h3>3. Wyrób gotowy — pakowanie (LOT)</h3><table><thead><tr><th>Nr pakowania</th><th>LOT wyrobu</th><th>Zlecenie sprzedaży</th><th style="text-align:right">Ilość</th><th>Data</th></tr></thead><tbody>${packRows}</tbody></table>
@@ -145,7 +146,7 @@ export default function Identyfikowalnosc() {
                     <td style={{ fontSize:12, fontWeight:500 }}>{p.recipes?.code} — {p.recipes?.name}</td>
                     <td style={{ fontSize:12 }}>{p.client||'—'}</td>
                     <td style={{ textAlign:'right', fontWeight:600 }}>{fmt(p.quantity_kg)} kg</td>
-                    <td className="muted" style={{ fontSize:12 }}>{p.produced_at?p.produced_at.slice(0,10):'—'}</td>
+                    <td className="muted" style={{ fontSize:12 }}>{pdate(p)}</td>
                     <td style={{ fontSize:11 }}>
                       {luz.length>0 && <div>{luz.map(b=>b.lot_code).filter(Boolean).join(', ')||'—'}</div>}
                       {packed.length>0 && <div className="muted">pak.: {packed.map(b=>b.lot_code).filter(Boolean).join(', ')}</div>}
