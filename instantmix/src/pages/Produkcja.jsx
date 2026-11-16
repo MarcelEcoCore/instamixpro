@@ -166,24 +166,42 @@ export default function Produkcja() {
   // ── Usuwanie produkcji ──
   async function doDelete(p) {
     setDelErr('')
-    // zdejmij powiązane dokumenty WZ oraz wyroby
-    const { data: fgs } = await supabase.from('finished_goods').select('id').eq('production_batch_id', p.id)
+    // Pełna kaskada „od dołu" — usunięcie produkcji czyści WSZYSTKIE powiązania automatycznie.
+    // 1) wyroby tej produkcji + operacje pakowania z nimi związane
+    const { data: fgs } = await supabase.from('finished_goods').select('id,packing_operation_id').eq('production_batch_id', p.id)
     const fgIds = (fgs||[]).map(x=>x.id)
-    if (fgIds.length) { await supabase.from('wz_documents').delete().in('finished_good_id', fgIds); await supabase.from('finished_goods').delete().eq('production_batch_id', p.id) }
-    // odczep zlecenia sprzedaży → wróć na „nowe"
+    const packIds = [...new Set((fgs||[]).map(x=>x.packing_operation_id).filter(Boolean))]
+    // 2) rzeczy zależne od wyrobów (WZ, korekty, zużycia półproduktu, skład bigbagów)
+    if (fgIds.length) {
+      await supabase.from('wz_documents').delete().in('finished_good_id', fgIds)
+      await supabase.from('fg_corrections').delete().in('finished_good_id', fgIds)
+      await supabase.from('packing_consumed').delete().in('source_finished_good_id', fgIds)
+      await supabase.from('bigbag_wsady').delete().in('finished_good_id', fgIds)
+    }
+    // 3) rzeczy zależne od operacji pakowania (zużycia opakowań/półproduktu)
+    if (packIds.length) {
+      await supabase.from('packing_consumed').delete().in('packing_operation_id', packIds)
+      await supabase.from('packaging_consumed').delete().in('packing_operation_id', packIds)
+    }
+    // 4) usuń wyroby (luz + spakowane)
+    await supabase.from('finished_goods').delete().eq('production_batch_id', p.id)
+    // 5) usuń operacje pakowania (już bez powiązań)
+    if (packIds.length) await supabase.from('packing_operations').delete().in('id', packIds)
+    // 6) zlecenia sprzedaży → wróć na „nowe"
     const orderIds = (p.production_order_sales||[]).map(x=>x.order_id)
     if (orderIds.length) await supabase.from('orders').update({ status:'nowe', produced_at:null, updated_at:new Date().toISOString() }).in('id', orderIds)
+    // 7) pozycje zużycia surowców
     await supabase.from('production_batch_items').delete().eq('production_batch_id', p.id)
-    // .select() pozwala sprawdzić, czy faktycznie coś skasowano
-    const { data: del, error: err } = await supabase.from('production_batches').delete().eq('id', p.id).select('id') // kaskada: wsady, bigbag_wsady, order_sales
+    // 8) na końcu sama produkcja (kaskada: wsady, bigbag_wsady, order_sales)
+    const { data: del, error: err } = await supabase.from('production_batches').delete().eq('id', p.id).select('id')
     if (err) {
       setDelErr(err.code==='23503'
-        ? 'Nie można usunąć — produkcja jest jeszcze gdzieś powiązana (np. pakowanie). Najpierw usuń te powiązania.'
+        ? ('Pozostało powiązanie blokujące: ' + (err.details || err.message) + ' — podaj mi tę treść, dorobię kasowanie.')
         : err.message)
       return
     }
     if (!del || del.length===0) {
-      setDelErr('Nie usunięto żadnego wiersza — najpewniej brak uprawnień w bazie (RLS) do kasowania produkcji. Uruchom etap14 (uprawnienia) w Supabase i spróbuj ponownie.')
+      setDelErr('Nie usunięto żadnego wiersza — brak uprawnień w bazie (RLS). Uruchom etap14 w Supabase i spróbuj ponownie.')
       return
     }
     setDelProd(null); load()
