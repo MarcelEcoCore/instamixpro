@@ -18,6 +18,7 @@ export const DEPARTMENTS = [
     { id: 'receptury',         label: 'Receptury' },
     { id: 'partie',            label: 'Przyjęcie dostawy' },
     { id: 'bom',               label: 'BOM' },
+    { id: 'identyfikowalnosc', label: 'Identyfikowalność (IFS)' },
   ]},
   { id: 'produkcja', label: 'Produkcja', tabs: [
     { id: 'kalkulator',        label: 'Kalkulator' },
