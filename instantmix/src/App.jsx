@@ -20,6 +20,7 @@ import Dostawcy from './pages/Dostawcy'
 import MagazynOpakowan from './pages/MagazynOpakowan'
 import Bom from './pages/Bom'
 import ZamowieniaZakupu from './pages/ZamowieniaZakupu'
+import Identyfikowalnosc from './pages/Identyfikowalnosc'
 import { ALL_TABS } from './lib/nav'
 import './index.css'
 
@@ -38,6 +39,7 @@ const COMPONENTS = {
   skladniki: Skladniki,
   receptury: Receptury,
   partie: PrzyjecieDostawy,
+  identyfikowalnosc: Identyfikowalnosc,
   kalkulator: Kalkulator,
   planowanie: Planowanie,
   produkcja: Produkcja,
