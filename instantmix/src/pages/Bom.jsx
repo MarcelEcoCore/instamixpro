@@ -10,6 +10,17 @@ function fmtGram(g) {
   return Number.isInteger(n) ? String(n) : String(n).replace(/\.?0+$/,'')
 }
 
+function buildCode({ recipeCode, clientNumber, unitSeg, gramatura, palletSeg }) {
+  const parts = []
+  if (recipeCode) parts.push(recipeCode)
+  const cn = clientNumber != null && String(clientNumber).trim() !== '' ? String(clientNumber).trim() : null
+  if (cn) parts.push(cn)
+  if (unitSeg) parts.push(unitSeg)
+  const g = fmtGram(gramatura); if (g) parts.push(g)
+  if (palletSeg) parts.push(palletSeg)
+  return parts.join('/')
+}
+
 export default function Bom() {
   const { profile } = useAuth()
   const isAdmin = profile?.role === 'admin'
@@ -42,7 +53,7 @@ export default function Bom() {
       supabase.from('bom').select('*, clients(number,name), recipes(code,name,version)').order('created_at', { ascending:false }),
       supabase.from('bom_items').select('*, packaging_materials(code,name,unit)'),
       supabase.from('clients').select('id,number,name').order('name'),
-      supabase.from('recipes').select('id,code,name,version,client_id,status').neq('status','zarchiwizowana').order('code'),
+      supabase.from('recipes').select('id,code,name,version,client_id,status').eq('status','dopuszczona').order('code'),
       supabase.from('packaging_materials').select('id,code,name,type,unit,segment_code').eq('active',true).order('code'),
     ])
     const errs = [be,ce,re,me].filter(Boolean).map(e=>e.message)
@@ -95,14 +106,13 @@ export default function Bom() {
   const selRecipe = recipes.find(r => r.id === form.recipe_id)
   const selUnit = materials.find(m => m.id === form.unit_material_id)
   const selPallet = materials.find(m => m.id === form.pallet_material_id)
-  const autoCode = (() => {
-    const parts = []
-    if (selRecipe?.code) parts.push(selRecipe.code)
-    if (selUnit?.segment_code) parts.push(selUnit.segment_code)
-    const g = fmtGram(form.gramatura_kg); if (g) parts.push(g)
-    if (selPallet?.segment_code) parts.push(selPallet.segment_code)
-    return parts.join('/')
-  })()
+  const selClient = clients.find(c => c.id === form.client_id)
+  const autoCode = buildCode({ recipeCode:selRecipe?.code, clientNumber:selClient?.number, unitSeg:selUnit?.segment_code, gramatura:form.gramatura_kg, palletSeg:selPallet?.segment_code })
+
+  // listy materiałów wg typu (worek / paleta / dodatki)
+  const unitMaterials   = materials.filter(m => m.type === 'worek')
+  const palletMaterials = materials.filter(m => m.type === 'paleta')
+  const dodatekMaterials = materials.filter(m => !['worek','paleta'].includes(m.type))
 
   function openNew() {
     setForm(EMPTY_BOM); setItems([]); setEditMode(false); setError(''); setModal(true)
@@ -163,6 +173,15 @@ export default function Bom() {
 
   const matLabel = m => `${m.code} — ${m.name}`
   const matById = id => materials.find(m => m.id === id)
+  const codeFor = b => buildCode({ recipeCode:b.recipes?.code, clientNumber:b.clients?.number, unitSeg:matById(b.unit_material_id)?.segment_code, gramatura:b.gramatura_kg, palletSeg:matById(b.pallet_material_id)?.segment_code }) || b.code_ext || '—'
+
+  async function regenAllCodes() {
+    for (const b of boms) {
+      const code = codeFor(b)
+      if (code && code !== '—' && code !== b.code_ext) await supabase.from('bom').update({ code_ext: code }).eq('id', b.id)
+    }
+    load()
+  }
 
   return (
     <div>
@@ -170,6 +189,7 @@ export default function Bom() {
         <div><div className="page-title">BOM — specyfikacje opakowania</div><div className="page-sub">Receptura + opakowania dla klienta → kod wyrobu</div></div>
         <div className="flex" style={{ gap:8 }}>
           <input className="search" placeholder="Szukaj BOM, klient, receptura..." value={search} onChange={e => setSearch(e.target.value)} style={{ width:240 }} />
+          {isAdmin && <button className="btn btn-sm" onClick={regenAllCodes} title="Przelicz kody wyrobów wg aktualnych danych (numer klienta, segmenty)">Przelicz kody</button>}
           {canEdit && <button className="btn btn-primary btn-sm" onClick={openNew}>+ Nowy BOM</button>}
         </div>
       </div>
@@ -204,7 +224,7 @@ export default function Bom() {
             {!loading && sorted.length===0 && <tr><td colSpan={10} style={{ textAlign:'center', padding:24, color:'#888' }}>Brak BOM-ów</td></tr>}
             {!loading && sorted.map(b => (
               <tr key={b.id} style={{ opacity: b.status==='wycofany'?0.6:1 }}>
-                <td><span className="lot">{b.code_ext||'—'}</span></td>
+                <td><span className="lot">{codeFor(b)}</span></td>
                 <td style={{ fontSize:13 }}>{b.clients ? (b.clients.number ? b.clients.number+' — ' : '')+b.clients.name : '—'}</td>
                 <td><div style={{ fontWeight:500, fontSize:13 }}>{b.recipes?.name}</div><div className="muted" style={{ fontSize:11 }}>{b.recipes?.code} · {b.recipes?.version}</div></td>
                 <td style={{ textAlign:'right', fontWeight:500 }}>{fmtGram(b.gramatura_kg)} kg</td>
@@ -233,7 +253,7 @@ export default function Bom() {
             <div><label>Klient *</label>
               <select value={form.client_id} onChange={e => { f('client_id', e.target.value); f('recipe_id','') }}>
                 <option value="">— wybierz klienta —</option>
-                {clients.map(c => <option key={c.id} value={c.id}>{c.number ? c.number+' — ' : ''}{c.name}</option>)}
+                {clientsSorted.map(c => <option key={c.id} value={c.id}>{c.number ? c.number+' — ' : ''}{c.name}</option>)}
               </select>
             </div>
             <div><label>Receptura *</label>
@@ -253,13 +273,13 @@ export default function Bom() {
             <div><label>Opakowanie jednostkowe (worek) *</label>
               <select value={form.unit_material_id} onChange={e => f('unit_material_id',e.target.value)}>
                 <option value="">— wybierz —</option>
-                {materials.map(m => <option key={m.id} value={m.id}>{matLabel(m)}{m.segment_code?` [${m.segment_code}]`:''}</option>)}
+                {unitMaterials.map(m => <option key={m.id} value={m.id}>{matLabel(m)}{m.segment_code?` [${m.segment_code}]`:''}</option>)}
               </select>
             </div>
             <div><label>Paleta</label>
               <select value={form.pallet_material_id} onChange={e => f('pallet_material_id',e.target.value)}>
                 <option value="">— brak —</option>
-                {materials.map(m => <option key={m.id} value={m.id}>{matLabel(m)}{m.segment_code?` [${m.segment_code}]`:''}</option>)}
+                {palletMaterials.map(m => <option key={m.id} value={m.id}>{matLabel(m)}{m.segment_code?` [${m.segment_code}]`:''}</option>)}
               </select>
             </div>
           </div>
@@ -283,7 +303,7 @@ export default function Bom() {
               <div key={i} className="flex" style={{ gap:6, marginBottom:6, alignItems:'center' }}>
                 <select value={it.packaging_material_id} onChange={e => updItem(i,'packaging_material_id',e.target.value)} style={{ flex:2 }}>
                   <option value="">— materiał —</option>
-                  {materials.map(m => <option key={m.id} value={m.id}>{matLabel(m)}</option>)}
+                  {dodatekMaterials.map(m => <option key={m.id} value={m.id}>{matLabel(m)}</option>)}
                 </select>
                 <input type="number" step="0.001" value={it.qty_per} onChange={e => updItem(i,'qty_per',e.target.value)} style={{ width:80 }} placeholder="ilość" />
                 <select value={it.per} onChange={e => updItem(i,'per',e.target.value)} style={{ width:120 }}>
