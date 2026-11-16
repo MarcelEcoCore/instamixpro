@@ -41,6 +41,7 @@ export default function Produkcja() {
   const [editIErr, setEditIErr] = useState('')
   // Usuwanie
   const [delProd, setDelProd] = useState(null)
+  const [delErr, setDelErr] = useState('')
 
   useEffect(() => { load() }, [])
 
@@ -164,6 +165,7 @@ export default function Produkcja() {
 
   // ── Usuwanie produkcji ──
   async function doDelete(p) {
+    setDelErr('')
     // zdejmij powiązane dokumenty WZ oraz wyroby
     const { data: fgs } = await supabase.from('finished_goods').select('id').eq('production_batch_id', p.id)
     const fgIds = (fgs||[]).map(x=>x.id)
@@ -172,7 +174,18 @@ export default function Produkcja() {
     const orderIds = (p.production_order_sales||[]).map(x=>x.order_id)
     if (orderIds.length) await supabase.from('orders').update({ status:'nowe', produced_at:null, updated_at:new Date().toISOString() }).in('id', orderIds)
     await supabase.from('production_batch_items').delete().eq('production_batch_id', p.id)
-    await supabase.from('production_batches').delete().eq('id', p.id) // kaskada: wsady, bigbag_wsady, order_sales
+    // .select() pozwala sprawdzić, czy faktycznie coś skasowano
+    const { data: del, error: err } = await supabase.from('production_batches').delete().eq('id', p.id).select('id') // kaskada: wsady, bigbag_wsady, order_sales
+    if (err) {
+      setDelErr(err.code==='23503'
+        ? 'Nie można usunąć — produkcja jest jeszcze gdzieś powiązana (np. pakowanie). Najpierw usuń te powiązania.'
+        : err.message)
+      return
+    }
+    if (!del || del.length===0) {
+      setDelErr('Nie usunięto żadnego wiersza — najpewniej brak uprawnień w bazie (RLS) do kasowania produkcji. Uruchom etap14 (uprawnienia) w Supabase i spróbuj ponownie.')
+      return
+    }
     setDelProd(null); load()
   }
 
@@ -342,7 +355,7 @@ ${bbBlocks}
                       <button className="btn btn-sm" onClick={()=>printOrder(p)} title="Karta dozowania">🖨</button>
                       {isAdmin && <button className="btn btn-sm" style={{background:'#E6F1FB',color:'#0C447C',border:'0.5px solid #B5D4F4'}} onClick={()=>openEditH(p)}>Edytuj</button>}
                       {isAdmin && <button className="btn btn-sm" style={{background:'#FFF3E0',color:'#E65100',border:'0.5px solid #FFCC80'}} onClick={()=>openEditI(p)} title="Ręczna edycja zużytych partii">Partie</button>}
-                      {isAdmin && <button className="btn btn-sm btn-danger" onClick={()=>setDelProd(p)}>Usuń</button>}
+                      {isAdmin && <button className="btn btn-sm btn-danger" onClick={()=>{ setDelErr(''); setDelProd(p) }}>Usuń</button>}
                     </div></td>
                   </tr>
                   {expanded===p.id && (
@@ -499,6 +512,7 @@ ${bbBlocks}
             Zostaną usunięte: wsady, zużyte partie, bigbagi/wyroby i dokumenty WZ tej produkcji. Przypięte zlecenia sprzedaży wrócą na status „nowe".<br/><br/>
             Operacja nieodwracalna.
           </div>
+          {delErr && <div className="err-box" style={{marginTop:8}}>{delErr}</div>}
           <div className="modal-footer">
             <button className="btn" onClick={()=>setDelProd(null)}>Anuluj</button>
             <button className="btn btn-danger" onClick={()=>doDelete(delProd)}>Tak, usuń</button>
