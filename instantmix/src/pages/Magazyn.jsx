@@ -2,6 +2,10 @@ import React, { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../App'
 
+const CORR_LABELS = { ubytek_uszkodzenie:'Ubytek / uszkodzenie', utylizacja_pelna:'Utylizacja (pełna)', korekta_inwentury:'Korekta inwentury', niedowazenie_dostawy:'Niedoważenie dostawy', zwrot_do_dostawcy:'Zwrot do dostawcy', inne:'Inne' }
+const num = v => { const n = parseFloat(String(v==null?'':v).replace(',','.')); return isNaN(n)?0:n }
+const today = () => new Date().toISOString().slice(0,10)
+
 export default function Magazyn() {
   const { profile } = useAuth()
   const isAdmin = profile?.role === 'admin'
@@ -14,6 +18,14 @@ export default function Magazyn() {
   const [savingMin, setSavingMin] = useState({})
   const [expandedId, setExpandedId] = useState(null)
   const [batchDetails, setBatchDetails] = useState({})
+  const [allCorr, setAllCorr] = useState([])
+  const [profMap, setProfMap] = useState({})
+
+  // Korekta stanu
+  const [corrBatch, setCorrBatch] = useState(null)
+  const [corrForm, setCorrForm] = useState({ correction_type:'ubytek_uszkodzenie', delta_kg:'', reason:'', event_date:today() })
+  const [corrSaving, setCorrSaving] = useState(false)
+  const [corrErr, setCorrErr] = useState('')
 
 
   useEffect(() => { load() }, [])
@@ -25,6 +37,10 @@ export default function Magazyn() {
       .eq('status','aktywny').order('code')
     const { data: stock } = await supabase.from('v_stock').select('*')
     const { data: used } = await supabase.from('production_batch_items').select('ingredient_id,quantity_used_kg, production_batches!inner(id)')
+    const { data: corr } = await supabase.from('stock_corrections').select('*, ingredient_batches(delivery_lot, ingredient_id, ingredients(code,name))').order('event_date',{ascending:false})
+    const { data: profs } = await supabase.from('profiles').select('id,full_name')
+    setAllCorr(corr||[])
+    const pm = {}; (profs||[]).forEach(p=>{ pm[p.id]=p.full_name }); setProfMap(pm)
 
     const stockMap = {}
     for (const s of (stock||[])) {
@@ -102,6 +118,54 @@ export default function Magazyn() {
     setExpandedId(ingredientId)
   }
 
+  async function refreshDetails(ingredientId) {
+    const { data } = await supabase.from('v_stock').select('*').eq('ingredient_id', ingredientId).order('received_date', { ascending: true })
+    const { data: ibs } = await supabase.from('ingredient_batches').select('id,supplier_name').eq('ingredient_id', ingredientId)
+    const supByBatch = {}; for (const b of (ibs||[])) supByBatch[b.id] = b.supplier_name || null
+    const withSup = (data||[]).map(b => ({ ...b, supplier_name: b.supplier_name ?? supByBatch[b.id] ?? null }))
+    setBatchDetails(p => ({ ...p, [ingredientId]: withSup }))
+  }
+
+  function openCorr(batch) {
+    setCorrBatch(batch)
+    setCorrForm({ correction_type:'ubytek_uszkodzenie', delta_kg:'', reason:'', event_date:today() })
+    setCorrErr('')
+  }
+  async function saveCorrection() {
+    if (!corrForm.reason.trim()) { setCorrErr('Podaj przyczynę korekty'); return }
+    const full = corrForm.correction_type==='utylizacja_pelna'
+    if (!full && !(num(corrForm.delta_kg) !== 0)) { setCorrErr('Podaj korektę ilości (ujemna = ubytek)'); return }
+    setCorrSaving(true); setCorrErr('')
+    const delta = full ? -parseFloat(corrBatch.current_kg||0) : num(corrForm.delta_kg)
+    const { error: err } = await supabase.from('stock_corrections').insert({
+      ingredient_batch_id: corrBatch.id, correction_type: corrForm.correction_type,
+      delta_kg: parseFloat(delta.toFixed(3)), reason: corrForm.reason.trim(),
+      event_date: corrForm.event_date, approved_by: profile?.id,
+    })
+    if (err) { setCorrErr(err.code==='42501' ? 'Brak uprawnień (RLS) do zapisu korekty — uruchom etap14.' : err.message); setCorrSaving(false); return }
+    if (full) await supabase.from('ingredient_batches').update({ status:'wstrzymana' }).eq('id', corrBatch.id)
+    setCorrSaving(false)
+    const ingId = corrBatch.ingredient_id
+    setCorrBatch(null)
+    await refreshDetails(ingId); load()
+  }
+
+  function printCorrections() {
+    const dateStr = new Date().toLocaleDateString('pl-PL'), timeStr = new Date().toLocaleTimeString('pl-PL',{hour:'2-digit',minute:'2-digit'})
+    const rowsHtml = (allCorr||[]).map((c,i) => {
+      const ing = c.ingredient_batches?.ingredients
+      return `<tr><td>${i+1}</td><td>${c.event_date||'—'}</td><td style="font-family:monospace">${ing?.code||'—'}</td><td>${ing?.name||'—'}</td><td style="font-family:monospace">${c.ingredient_batches?.delivery_lot||'—'}</td><td>${CORR_LABELS[c.correction_type]||c.correction_type}</td><td style="text-align:right;${parseFloat(c.delta_kg)<0?'color:#A32D2D':''}">${parseFloat(c.delta_kg)>0?'+':''}${parseFloat(c.delta_kg).toFixed(3)}</td><td>${(c.reason||'').replace(/</g,'&lt;')}</td><td>${profMap[c.approved_by]||'—'}</td></tr>`
+    }).join('')
+    const totalDelta = (allCorr||[]).reduce((s,c)=>s+parseFloat(c.delta_kg||0),0)
+    const html = `<!DOCTYPE html><html lang="pl"><head><meta charset="UTF-8"><title>Rejestr korekt magazynowych</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:10px;padding:14px}.header{display:flex;justify-content:space-between;border-bottom:2px solid #0F6E56;padding-bottom:8px;margin-bottom:10px}.company{font-size:15px;font-weight:bold;color:#0F6E56}.title{font-size:12px;font-weight:bold;margin-top:3px}table{width:100%;border-collapse:collapse;margin-bottom:10px}th{background:#0F6E56;color:#fff;padding:5px;border:1px solid #085041;font-size:8px;text-align:left}td{padding:4px 5px;border:1px solid #D3D1C7;font-size:9px}tr:nth-child(even) td{background:#FAFAF8}.total td{background:#E1F5EE!important;font-weight:bold}.sig{margin-top:16px}.sig-grid{display:grid;grid-template-columns:1fr 1fr;gap:30px;margin-top:10px}.sig-line{border-bottom:1px solid #333;margin-top:26px;margin-bottom:3px}.sig-label{font-size:8px;color:#888;text-transform:uppercase}@media print{@page{margin:8mm;size:A4 landscape}}</style></head><body>
+<div class="header"><div><div class="company">InstantMix Pro</div><div class="title">Rejestr korekt stanu magazynowego składników</div><div style="font-size:9px;color:#555;margin-top:2px">Dokument do wyjaśnienia różnic inwentaryzacyjnych</div></div><div style="text-align:right;font-size:9px;color:#555">Wygenerowano: ${dateStr} ${timeStr}<br>Wydrukował: ${profile?.full_name||'—'}</div></div>
+<table><thead><tr><th style="width:22px">Lp.</th><th style="width:70px">Data</th><th style="width:55px">Kod</th><th>Składnik</th><th style="width:110px">Nr partii</th><th style="width:120px">Typ korekty</th><th style="width:70px;text-align:right">Ilość (kg)</th><th>Przyczyna</th><th style="width:100px">Zatwierdził</th></tr></thead>
+<tbody>${rowsHtml||'<tr><td colspan="9" style="text-align:center;color:#888;padding:12px">Brak zarejestrowanych korekt</td></tr>'}<tr class="total"><td colspan="6" style="text-align:right">RAZEM korekty:</td><td style="text-align:right">${totalDelta>0?'+':''}${totalDelta.toFixed(3)}</td><td colspan="2"></td></tr></tbody></table>
+<div class="sig"><div class="sig-grid"><div><div class="sig-label">Sporządził</div><div class="sig-line"></div><div class="sig-label">Imię, nazwisko i podpis</div></div><div><div class="sig-label">Zatwierdził (Kierownik)</div><div class="sig-line"></div><div class="sig-label">Imię, nazwisko i podpis</div></div></div></div>
+<script>window.onload=function(){window.print()}</script></body></html>`
+    const win = window.open('','_blank'); win.document.write(html); win.document.close()
+  }
+
   const filtered = rows.filter(r => {
     const matchQ = !search || r.name.toLowerCase().includes(search.toLowerCase()) || r.code.toLowerCase().includes(search.toLowerCase())
     const matchAlert = filterAlert==='wszystkie' ? true :
@@ -174,6 +238,7 @@ export default function Magazyn() {
         </div>
         <div className="flex" style={{ gap:6, flexWrap:'wrap' }}>
           <button className="btn btn-sm" onClick={printInventory}>Drukuj inwenturę</button>
+          <button className="btn btn-sm" onClick={printCorrections} title="Rejestr korekt z przyczynami — do wyjaśnienia inwentur">Drukuj korekty (PDF)</button>
           <button className="btn btn-sm" onClick={load}>Odśwież</button>
         </div>
       </div>
@@ -276,6 +341,7 @@ export default function Magazyn() {
                               <th style={{ textAlign:'right' }}>Cena (zł/kg)</th>
                               <th style={{ textAlign:'right' }}>Wartość (zł)</th>
                               <th>Status</th>
+                              <th>Akcje</th>
                             </tr></thead>
                             <tbody>
                               {batchDetails[r.id].map(b => {
@@ -308,6 +374,7 @@ export default function Magazyn() {
                                         : '—'}
                                     </td>
                                     <td><span className={`badge ${b.status==='dopuszczona'?'b-ok':'b-err'}`}>{b.status}</span></td>
+                                    <td><button className="btn btn-sm" style={{ fontSize:10, padding:'2px 7px', background:'#FFF3E0', color:'#E65100', border:'0.5px solid #FFCC80' }} onClick={() => openCorr(b)}>Korekta</button></td>
                                   </tr>
                                 )
                               })}
@@ -329,6 +396,38 @@ export default function Magazyn() {
           Uwaga: {stats.critical} {stats.critical===1?'składnik wymaga':'składniki wymagają'} uzupełnienia.
         </div>
       )}
+
+      {/* Modal korekty stanu */}
+      <div className={`modal-overlay ${corrBatch?'open':''}`} onClick={e => e.target===e.currentTarget && setCorrBatch(null)}>
+        <div className="modal" style={{ maxWidth:520 }}>
+          <div className="modal-title">Korekta stanu magazynowego</div>
+          {corrBatch && (
+            <div style={{ background:'#F1EFE8', borderRadius:8, padding:10, marginBottom:12, fontSize:13 }}>
+              Partia: <span className="lot">{corrBatch.delivery_lot}</span> &nbsp;|&nbsp; Stan: <b>{parseFloat(corrBatch.current_kg||0).toFixed(3)} kg</b>
+            </div>
+          )}
+          {corrErr && <div className="err-box">{corrErr}</div>}
+          <div className="fr">
+            <div><label>Typ korekty / przyczyna</label>
+              <select value={corrForm.correction_type} onChange={e => setCorrForm(f=>({...f, correction_type:e.target.value}))}>
+                {Object.entries(CORR_LABELS).map(([k,v]) => <option key={k} value={k}>{v}</option>)}
+              </select>
+            </div>
+            {corrForm.correction_type!=='utylizacja_pelna' && (
+              <div><label>Korekta ilości (kg) — ujemna = ubytek</label>
+                <input type="text" inputMode="decimal" value={corrForm.delta_kg} onChange={e => setCorrForm(f=>({...f, delta_kg:e.target.value}))} placeholder="np. -50 lub +20" />
+              </div>
+            )}
+          </div>
+          {corrForm.correction_type==='utylizacja_pelna' && <div className="warn-box">Utylizacja pełna — cały stan partii ({parseFloat(corrBatch?.current_kg||0).toFixed(3)} kg) zostanie zdjęty, a partia wstrzymana.</div>}
+          <div style={{ marginBottom:10 }}><label>Przyczyna (wymagana — trafi na wydruk) *</label><input value={corrForm.reason} onChange={e => setCorrForm(f=>({...f, reason:e.target.value}))} placeholder="np. opakowanie uszkodzone podczas transportu" /></div>
+          <div><label>Data zdarzenia</label><input type="date" value={corrForm.event_date} onChange={e => setCorrForm(f=>({...f, event_date:e.target.value}))} /></div>
+          <div className="modal-footer">
+            <button className="btn" onClick={() => setCorrBatch(null)}>Anuluj</button>
+            <button className="btn btn-danger" onClick={saveCorrection} disabled={corrSaving}>{corrSaving?'Zapisywanie...':'Zapisz korektę'}</button>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
