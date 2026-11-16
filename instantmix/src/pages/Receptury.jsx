@@ -142,7 +142,19 @@ export default function Receptury() {
   }
 
   async function deleteRecipe(recipe) {
-    await supabase.from('recipes').delete().eq('id', recipe.id)
+    setError('')
+    // Sprawdź powiązania, które blokują usunięcie (bez kaskady w bazie)
+    const [{ count: bomCnt }, { count: prodCnt }] = await Promise.all([
+      supabase.from('bom').select('id', { count:'exact', head:true }).eq('recipe_id', recipe.id),
+      supabase.from('production_batches').select('id', { count:'exact', head:true }).eq('recipe_id', recipe.id),
+    ])
+    if ((bomCnt||0) > 0 || (prodCnt||0) > 0) {
+      setError(`Nie można usunąć — receptura jest powiązana z ${bomCnt||0} BOM i ${prodCnt||0} produkcjami. Najpierw usuń powiązane BOM-y i produkcje tej receptury.`)
+      return
+    }
+    await supabase.from('recipe_items').delete().eq('recipe_id', recipe.id)
+    const { error: err } = await supabase.from('recipes').delete().eq('id', recipe.id)
+    if (err) { setError(err.code==='23503' ? 'Nie można usunąć — receptura jest jeszcze gdzieś używana.' : err.message); return }
     setConfirmDelete(null); load()
   }
 
@@ -250,7 +262,7 @@ export default function Receptury() {
                     <div className="flex" style={{ gap:4 }}>
                       {canEdit && <button className="btn btn-sm" onClick={() => openEdit(r)}>Edytuj</button>}
                       {canEdit && <button className="btn btn-sm" style={{ background:'#EEEDFE', color:'#3C3489', border:'0.5px solid #AFA9EC' }} onClick={() => openDuplicate(r)}>Duplikuj</button>}
-                      {canEdit && <button className="btn btn-sm btn-danger" onClick={() => setConfirmDelete(r)}>Usuń</button>}
+                      {canEdit && <button className="btn btn-sm btn-danger" onClick={() => { setError(''); setConfirmDelete(r) }}>Usuń</button>}
                     </div>
                   </td>
                 </tr>
@@ -437,6 +449,7 @@ export default function Receptury() {
         <div className="modal" style={{ maxWidth:420 }}>
           <div className="modal-title">Usuń recepturę</div>
           <div className="warn-box">Czy na pewno chcesz usunąć <b>{confirmDelete?.code} — {confirmDelete?.name}</b>?<br/>Historia produkcji pozostanie nienaruszona.</div>
+          {error && <div className="err-box" style={{ marginTop:8 }}>{error}</div>}
           <div className="modal-footer">
             <button className="btn" onClick={() => setConfirmDelete(null)}>Anuluj</button>
             <button className="btn btn-danger" onClick={() => deleteRecipe(confirmDelete)}>Tak, usuń</button>
