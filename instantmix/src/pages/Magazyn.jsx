@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../App'
 
-const CORR_LABELS = { ubytek_uszkodzenie:'Ubytek / uszkodzenie', utylizacja_pelna:'Utylizacja (pełna)', korekta_inwentury:'Korekta inwentury', niedowazenie_dostawy:'Niedoważenie dostawy', zwrot_do_dostawcy:'Zwrot do dostawcy' }
+const CORR_LABELS = { ubytek_uszkodzenie:'Ubytek / uszkodzenie', utylizacja_pelna:'Utylizacja (pełna)', korekta_inwentury:'Korekta inwentury', niedowazenie_dostawy:'Niedoważenie dostawy', zwrot_do_dostawcy:'Zwrot do dostawcy', badania_laboratoryjne:'Badania laboratoryjne', inne:'Inne' }
 const num = v => { const n = parseFloat(String(v==null?'':v).replace(',','.')); return isNaN(n)?0:n }
 const today = () => new Date().toISOString().slice(0,10)
 
