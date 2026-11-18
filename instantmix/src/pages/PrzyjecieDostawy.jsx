@@ -15,6 +15,7 @@ export default function PrzyjecieDostawy() {
   const [items, setItems] = useState([])        // pozycje zamówień (z PO + dostawca)
   const [recvMap, setRecvMap] = useState({})     // poi_id -> przyjęto
   const [supIng, setSupIng] = useState([])       // przypisania składników (spec, is_current)
+  const [supPack, setSupPack] = useState([])     // przypisania materiałów opakowaniowych (is_current)
   const [suppliers, setSuppliers] = useState([])
   const [ingredients, setIngredients] = useState([])
   const [packaging, setPackaging] = useState([])
@@ -44,17 +45,19 @@ export default function PrzyjecieDostawy() {
 
   // Usuwanie
   const [delRow, setDelRow] = useState(null)
+  const [delErr, setDelErr] = useState('')
 
   useEffect(() => { load() }, [])
 
   async function load() {
     setLoading(true)
-    const [{ data: its }, { data: ib }, { data: pb }, { data: si }, { data: sup }, { data: ing }, { data: pm }, { data: ibh }, { data: pbh }] = await Promise.all([
+    const [{ data: its }, { data: ib }, { data: pb }, { data: si }, { data: sup }, { data: sp }, { data: ing }, { data: pm }, { data: ibh }, { data: pbh }] = await Promise.all([
       supabase.from('purchase_order_items').select('*, ingredients(code,name), packaging_materials(code,name,unit), purchase_orders(po_number,status,expected_date,supplier_id,suppliers(name))'),
       supabase.from('ingredient_batches').select('purchase_order_item_id,quantity_kg'),
       supabase.from('packaging_batches').select('purchase_order_item_id,quantity'),
       supabase.from('supplier_ingredients').select('supplier_id,ingredient_id,spec_number,spec_approved_at,is_current'),
       supabase.from('suppliers').select('id,name,kind').order('name'),
+      supabase.from('supplier_packaging').select('supplier_id,packaging_material_id,is_current'),
       supabase.from('ingredients').select('id,code,name').eq('status','aktywny').order('code'),
       supabase.from('packaging_materials').select('id,code,name,unit').eq('active',true).order('code'),
       supabase.from('ingredient_batches').select('*, ingredients(code,name)').order('received_date',{ascending:false}).limit(150),
@@ -66,6 +69,7 @@ export default function PrzyjecieDostawy() {
     setRecvMap(rm)
     setItems(its || [])
     setSupIng(si || [])
+    setSupPack(sp || [])
     setSuppliers(sup || [])
     setIngredients(ing || [])
     setPackaging(pm || [])
@@ -124,6 +128,18 @@ export default function PrzyjecieDostawy() {
     if (!s) s = supIng.find(x => x.ingredient_id === ingredientId && x.is_current)
     if (!s) s = supIng.find(x => x.ingredient_id === ingredientId)
     return s ? { spec_number:s.spec_number||'', spec_approved_at:s.spec_approved_at||'' } : { spec_number:'', spec_approved_at:'' }
+  }
+
+  // Aktualny dostawca przypisany do składnika → nazwa (z Dostawców, flaga „aktualny")
+  function currentIngSupplierName(ingredientId) {
+    const s = supIng.find(x => x.ingredient_id === ingredientId && x.is_current) || supIng.find(x => x.ingredient_id === ingredientId)
+    if (!s) return ''
+    return suppliers.find(v => v.id === s.supplier_id)?.name || ''
+  }
+  // Aktualny dostawca przypisany do materiału opakowaniowego → id
+  function currentPackSupplierId(pmId) {
+    const s = supPack.find(x => x.packaging_material_id === pmId && x.is_current) || supPack.find(x => x.packaging_material_id === pmId)
+    return s ? s.supplier_id : ''
   }
 
   // ── Przyjęcie z ZZ ──
@@ -284,13 +300,23 @@ export default function PrzyjecieDostawy() {
 
   // ── Usuwanie ──
   async function doDelete(h) {
+    setDelErr('')
+    const table = h.type === 'surowiec' ? 'ingredient_batches' : 'packaging_batches'
     if (h.type === 'surowiec') {
       await supabase.from('stock_corrections').delete().eq('ingredient_batch_id', h.raw.id)
       await supabase.from('production_batch_items').delete().eq('ingredient_batch_id', h.raw.id)
-      await supabase.from('ingredient_batches').delete().eq('id', h.raw.id)
-    } else {
-      // korekty i zużycia opakowań kasują się kaskadowo (FK on delete cascade)
-      await supabase.from('packaging_batches').delete().eq('id', h.raw.id)
+    }
+    // .select() pozwala sprawdzić, czy faktycznie coś skasowano
+    const { data: del, error: err } = await supabase.from(table).delete().eq('id', h.raw.id).select('id')
+    if (err) {
+      setDelErr(err.code==='23503'
+        ? 'Nie można usunąć — partia jest jeszcze gdzieś powiązana (np. zużycie w produkcji/pakowaniu). Najpierw usuń te powiązania.'
+        : err.message)
+      return
+    }
+    if (!del || del.length===0) {
+      setDelErr('Nie usunięto żadnego wiersza — najpewniej brak uprawnień w bazie (RLS) do kasowania partii. Potrzebna krótka poprawka uprawnień w Supabase (mam gotowy SQL).')
+      return
     }
     setDelRow(null); load()
   }
@@ -374,7 +400,7 @@ export default function PrzyjecieDostawy() {
                 {isAdmin && <td>
                   <div className="flex" style={{ gap:4 }}>
                     <button className="btn btn-sm" style={{ fontSize:10, padding:'2px 7px' }} onClick={() => openEdit(h)}>Edytuj</button>
-                    <button className="btn btn-sm btn-danger" style={{ fontSize:10, padding:'2px 7px' }} onClick={() => setDelRow(h)}>Usuń</button>
+                    <button className="btn btn-sm btn-danger" style={{ fontSize:10, padding:'2px 7px' }} onClick={() => { setDelErr(''); setDelRow(h) }}>Usuń</button>
                   </div>
                 </td>}
               </tr>
@@ -442,13 +468,13 @@ export default function PrzyjecieDostawy() {
             </div>
             {manForm.type==='surowiec'
               ? <div><label>Składnik *</label>
-                  <select value={manForm.ingredient_id} onChange={e => mf('ingredient_id',e.target.value)}>
+                  <select value={manForm.ingredient_id} onChange={e => { const id=e.target.value; const sup=currentIngSupplierName(id); setManForm(p=>({ ...p, ingredient_id:id, supplier_name: sup || p.supplier_name })) }}>
                     <option value="">— wybierz —</option>
                     {ingredients.map(i => <option key={i.id} value={i.id}>{i.code} — {i.name}</option>)}
                   </select>
                 </div>
               : <div><label>Materiał opakowaniowy *</label>
-                  <select value={manForm.packaging_material_id} onChange={e => mf('packaging_material_id',e.target.value)}>
+                  <select value={manForm.packaging_material_id} onChange={e => { const id=e.target.value; const supId=currentPackSupplierId(id); setManForm(p=>({ ...p, packaging_material_id:id, supplier_id: supId || p.supplier_id })) }}>
                     <option value="">— wybierz —</option>
                     {packaging.map(m => <option key={m.id} value={m.id}>{m.code} — {m.name}</option>)}
                   </select>
@@ -550,6 +576,7 @@ export default function PrzyjecieDostawy() {
             Zostaną automatycznie usunięte powiązane korekty{delRow?.type==='surowiec' && <> oraz powiązania z partiami produkcyjnymi</>}.<br/><br/>
             <b>Uwaga:</b> jeśli partia była użyta w produkcji, stany mogą wymagać przeliczenia. Operacja nieodwracalna.
           </div>
+          {delErr && <div className="err-box" style={{ marginTop:8 }}>{delErr}</div>}
           <div className="modal-footer">
             <button className="btn" onClick={() => setDelRow(null)}>Anuluj</button>
             <button className="btn btn-danger" onClick={() => doDelete(delRow)}>Tak, usuń</button>
