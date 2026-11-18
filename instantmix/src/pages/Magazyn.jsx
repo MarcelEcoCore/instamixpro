@@ -132,14 +132,14 @@ export default function Magazyn() {
     setCorrErr('')
   }
   async function saveCorrection() {
-    if (!corrForm.reason.trim()) { setCorrErr('Podaj przyczynę korekty'); return }
+    if (corrForm.correction_type==='inne' && !corrForm.reason.trim()) { setCorrErr('Dla typu „Inne" podaj opis przyczyny'); return }
     const full = corrForm.correction_type==='utylizacja_pelna'
     if (!full && !(num(corrForm.delta_kg) !== 0)) { setCorrErr('Podaj korektę ilości (ujemna = ubytek)'); return }
     setCorrSaving(true); setCorrErr('')
     const delta = full ? -parseFloat(corrBatch.current_kg||0) : num(corrForm.delta_kg)
     const { error: err } = await supabase.from('stock_corrections').insert({
       ingredient_batch_id: corrBatch.id, correction_type: corrForm.correction_type,
-      delta_kg: parseFloat(delta.toFixed(3)), reason: corrForm.reason.trim(),
+      delta_kg: parseFloat(delta.toFixed(3)), reason: corrForm.reason.trim() || CORR_LABELS[corrForm.correction_type],
       event_date: corrForm.event_date, approved_by: profile?.id,
     })
     if (err) { setCorrErr(err.code==='42501' ? 'Brak uprawnień (RLS) do zapisu korekty — uruchom etap14.' : err.message); setCorrSaving(false); return }
@@ -420,7 +420,7 @@ export default function Magazyn() {
             )}
           </div>
           {corrForm.correction_type==='utylizacja_pelna' && <div className="warn-box">Utylizacja pełna — cały stan partii ({parseFloat(corrBatch?.current_kg||0).toFixed(3)} kg) zostanie zdjęty, a partia wstrzymana.</div>}
-          <div style={{ marginBottom:10 }}><label>Przyczyna (wymagana — trafi na wydruk) *</label><input value={corrForm.reason} onChange={e => setCorrForm(f=>({...f, reason:e.target.value}))} placeholder="np. opakowanie uszkodzone podczas transportu" /></div>
+          <div style={{ marginBottom:10 }}><label>{corrForm.correction_type==='inne' ? 'Opis przyczyny (wymagany dla „Inne") *' : 'Dodatkowy opis (opcjonalnie — trafi na wydruk)'}</label><input value={corrForm.reason} onChange={e => setCorrForm(f=>({...f, reason:e.target.value}))} placeholder={corrForm.correction_type==='inne' ? 'opisz przyczynę' : 'opcjonalny komentarz'} /></div>
           <div><label>Data zdarzenia</label><input type="date" value={corrForm.event_date} onChange={e => setCorrForm(f=>({...f, event_date:e.target.value}))} /></div>
           <div className="modal-footer">
             <button className="btn" onClick={() => setCorrBatch(null)}>Anuluj</button>
