@@ -43,6 +43,11 @@ export default function Produkcja() {
   // Usuwanie
   const [delProd, setDelProd] = useState(null)
   const [delErr, setDelErr] = useState('')
+  // Edycja LOT bigbaga
+  const [editLot, setEditLot] = useState(null)
+  const [editLotForm, setEditLotForm] = useState({ lot_code:'', bb_code:'' })
+  const [editLotSaving, setEditLotSaving] = useState(false)
+  const [editLotErr, setEditLotErr] = useState('')
 
   useEffect(() => { load() }, [])
 
@@ -51,7 +56,7 @@ export default function Produkcja() {
     const sel = '*, recipes(code,name,version), production_wsady(id,wsad_no,planned_kg,bb_plan_no), production_order_sales(order_id,orders(order_number))'
     const [{ data: pb }, { data: luz }, { data: pack }, { data: idx }, { data: ing }, { data: ib }] = await Promise.all([
       supabase.from('production_batches').select(sel).order('lot_number',{ascending:false}),
-      supabase.from('finished_goods').select('production_batch_id,bb_code,lot_code,bb_no,quantity_kg').eq('form','luz'),
+      supabase.from('finished_goods').select('id,production_batch_id,bb_code,lot_code,bb_no,quantity_kg').eq('form','luz'),
       supabase.from('finished_goods').select('production_batch_id,lot_code,quantity_kg,unit_count,order_id').eq('form','spakowane'),
       supabase.from('production_batch_items').select('production_batch_id, ingredient_batches(delivery_lot)'),
       supabase.from('ingredients').select('id,code,name').eq('status','aktywny').order('code'),
@@ -215,6 +220,17 @@ export default function Produkcja() {
       return
     }
     setDelProd(null); load()
+  }
+
+  // ── Edycja LOT bigbaga (półproduktu) ──
+  function openEditLot(b) { setEditLot(b); setEditLotForm({ lot_code:b.lot_code||'', bb_code:b.bb_code||'' }); setEditLotErr('') }
+  async function saveLot() {
+    if (!editLotForm.lot_code.trim()) { setEditLotErr('LOT nie może być pusty'); return }
+    setEditLotSaving(true); setEditLotErr('')
+    const res = await supabase.from('finished_goods').update({ lot_code:editLotForm.lot_code.trim(), bb_code:editLotForm.bb_code.trim()||null }).eq('id', editLot.id).select('id')
+    if (res.error) { setEditLotErr(res.error.message); setEditLotSaving(false); return }
+    if (!res.data || res.data.length===0) { setEditLotErr('Nie zapisano — brak uprawnień (RLS). Uruchom etap14.'); setEditLotSaving(false); return }
+    setEditLotSaving(false); setEditLot(null); load()
   }
 
   // ── Druk: karta dozowania ──
@@ -411,8 +427,8 @@ ${bbBlocks}
 
                             <div style={{fontSize:11,fontWeight:600,color:'#5F5E5A',margin:'10px 0 4px'}}>2. Półprodukt — bigbagi (LOT)</div>
                             {luz.length===0 ? <div className="muted" style={{fontSize:12}}>Brak bigbagów.</div> : (
-                              <table style={{width:'auto',minWidth:460}}><thead><tr><th>Kod bigbaga</th><th>LOT</th><th style={{textAlign:'right'}}>Masa</th></tr></thead>
-                                <tbody>{luz.map((b,i)=>(<tr key={i}><td style={{fontFamily:'monospace',fontSize:11}}>{b.bb_code||'—'}</td><td style={{fontFamily:'monospace',fontSize:12}}>{b.lot_code||'—'}</td><td style={{textAlign:'right'}}>{fmt(b.quantity_kg)} kg</td></tr>))}</tbody></table>
+                              <table style={{width:'auto',minWidth:460}}><thead><tr><th>Kod bigbaga</th><th>LOT</th><th style={{textAlign:'right'}}>Masa</th>{isAdmin && <th></th>}</tr></thead>
+                                <tbody>{luz.map((b,i)=>(<tr key={i}><td style={{fontFamily:'monospace',fontSize:11}}>{b.bb_code||'—'}</td><td style={{fontFamily:'monospace',fontSize:12}}>{b.lot_code||'—'}</td><td style={{textAlign:'right'}}>{fmt(b.quantity_kg)} kg</td>{isAdmin && <td><button className="btn btn-sm" style={{fontSize:10,padding:'2px 7px',background:'#E6F1FB',color:'#0C447C',border:'0.5px solid #B5D4F4'}} onClick={()=>openEditLot(b)}>Edytuj LOT</button></td>}</tr>))}</tbody></table>
                             )}
 
                             <div style={{fontSize:11,fontWeight:600,color:'#5F5E5A',margin:'10px 0 4px'}}>3. Wyrób gotowy — pakowanie (LOT)</div>
@@ -531,6 +547,21 @@ ${bbBlocks}
           <div className="modal-footer">
             <button className="btn" onClick={()=>setEditI(null)}>Anuluj</button>
             <button className="btn btn-primary" onClick={saveEditI} disabled={saving}>{saving?'Zapisywanie...':'Zapisz partie'}</button>
+          </div>
+        </div>
+      </div>
+
+      {/* Modal edycji LOT bigbaga */}
+      <div className={`modal-overlay ${editLot?'open':''}`} onClick={e=>e.target===e.currentTarget && setEditLot(null)}>
+        <div className="modal" style={{maxWidth:480}}>
+          <div className="modal-title">Edycja LOT półproduktu</div>
+          <div className="info-box" style={{marginBottom:10,fontSize:12}}>Popraw LOT bez usuwania produkcji. Zmiana dotyczy tego bigbaga.</div>
+          {editLotErr && <div className="err-box">{editLotErr}</div>}
+          <div style={{marginBottom:10}}><label>LOT *</label><input value={editLotForm.lot_code} onChange={e=>setEditLotForm(f=>({...f,lot_code:e.target.value}))} placeholder="np. L260323000201" style={{fontFamily:'monospace'}} /></div>
+          <div><label>Kod bigbaga</label><input value={editLotForm.bb_code} onChange={e=>setEditLotForm(f=>({...f,bb_code:e.target.value}))} style={{fontFamily:'monospace'}} /></div>
+          <div className="modal-footer">
+            <button className="btn" onClick={()=>setEditLot(null)}>Anuluj</button>
+            <button className="btn btn-primary" onClick={saveLot} disabled={editLotSaving}>{editLotSaving?'Zapisywanie...':'Zapisz LOT'}</button>
           </div>
         </div>
       </div>
