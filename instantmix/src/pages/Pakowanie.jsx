@@ -9,10 +9,14 @@ export default function Pakowanie() {
   const [view, setView] = useState('list')
   const [salesOrders, setSalesOrders] = useState([])
   const [packedByOrder, setPackedByOrder] = useState({})   // order_id -> units packed
+  const [stockBigbags, setStockBigbags] = useState([])     // luz na magazynie (dostępne) do pakowania bez zlecenia
   const [loading, setLoading] = useState(true)
 
   // pack view
   const [order, setOrder] = useState(null)
+  const [stockMode, setStockMode] = useState(false)        // pakowanie z magazynu (bez zlecenia)
+  const [boms, setBoms] = useState([])                     // BOM-y dla receptury bigbaga (wybór produktu)
+  const [bomId, setBomId] = useState('')
   const [bigbags, setBigbags] = useState([])    // luz dla receptury zlecenia, z available
   const [bigbagId, setBigbagId] = useState('')
   const [units, setUnits] = useState('')
@@ -31,12 +35,16 @@ export default function Pakowanie() {
 
   async function load() {
     setLoading(true)
-    const [{ data: ords }, { data: fg }] = await Promise.all([
+    const [{ data: ords }, { data: fg }, { data: luz }, { data: consumed }] = await Promise.all([
       supabase.from('orders').select('id,order_number,status,qty_units,recipe_id,clients(number,name),bom(code_ext,gramatura_kg,units_per_pallet,unit_material_id,pallet_material_id,recipe_id,bom_items(packaging_material_id,qty_per,per))').in('status',['wyprodukowane','w_pakowaniu']).order('ship_date',{ascending:true}),
       supabase.from('finished_goods').select('id,quantity_kg,unit_count,order_id,form').eq('form','spakowane'),
+      supabase.from('finished_goods').select('id,bb_code,lot_code,quantity_kg,production_batch_id,production_batches(recipe_id,recipes(code,name))').eq('form','luz'),
+      supabase.from('packing_consumed').select('source_finished_good_id,quantity_kg'),
     ])
     const pk={}; (fg||[]).forEach(g=>{ if(g.order_id) pk[g.order_id]=(pk[g.order_id]||0)+(parseInt(g.unit_count)||0) })
-    setSalesOrders(ords||[]); setPackedByOrder(pk)
+    const usedLuz={}; (consumed||[]).forEach(c=>{ if(c.source_finished_good_id) usedLuz[c.source_finished_good_id]=(usedLuz[c.source_finished_good_id]||0)+parseFloat(c.quantity_kg||0) })
+    const stockBB=(luz||[]).map(g=>({ ...g, available: parseFloat((parseFloat(g.quantity_kg)-(usedLuz[g.id]||0)).toFixed(3)) })).filter(g=>g.available>0.001)
+    setSalesOrders(ords||[]); setPackedByOrder(pk); setStockBigbags(stockBB)
     setLoading(false)
   }
 
@@ -54,20 +62,41 @@ export default function Pakowanie() {
     const usedLuz={}; (consumed||[]).forEach(c=>{ if(c.source_finished_good_id) usedLuz[c.source_finished_good_id]=(usedLuz[c.source_finished_good_id]||0)+parseFloat(c.quantity_kg||0) })
     const bbs=(fg||[]).filter(g=>g.production_batches?.recipe_id===rid).map(g=>({ ...g, available: parseFloat((parseFloat(g.quantity_kg)-(usedLuz[g.id]||0)).toFixed(3)) })).filter(g=>g.available>0.001)
     const mm={}; (m||[]).forEach(x=>{mm[x.id]=x})
+    setStockMode(false); setBoms([]); setBomId('')
     setOrder(o); setBigbags(bbs); setBigbagId(''); setUnits(''); setMats(mm); setPkgStock(ps||[]); setPacks({}); setPackedBy(''); setView('pack')
   }
 
+  // Pakowanie półproduktu z magazynu (bez zlecenia) — wybierasz BOM/produkt
+  async function openPackStock(bb) {
+    setError('')
+    const rid = bb.production_batches?.recipe_id
+    const [{ data: fg }, { data: consumed }, { data: m }, { data: ps }, { data: bomList }] = await Promise.all([
+      supabase.from('finished_goods').select('id,bb_code,lot_code,quantity_kg,production_batch_id,production_batches(recipe_id)').eq('form','luz'),
+      supabase.from('packing_consumed').select('source_finished_good_id,quantity_kg'),
+      supabase.from('packaging_materials').select('id,code,name,unit'),
+      supabase.from('v_packaging_stock').select('*').order('received_date',{ascending:true}),
+      supabase.from('bom').select('id,code_ext,gramatura_kg,units_per_pallet,unit_material_id,pallet_material_id,recipe_id,bom_items(packaging_material_id,qty_per,per)').eq('recipe_id', rid),
+    ])
+    const usedLuz={}; (consumed||[]).forEach(c=>{ if(c.source_finished_good_id) usedLuz[c.source_finished_good_id]=(usedLuz[c.source_finished_good_id]||0)+parseFloat(c.quantity_kg||0) })
+    const bbs=(fg||[]).filter(g=>g.production_batches?.recipe_id===rid).map(g=>({ ...g, available: parseFloat((parseFloat(g.quantity_kg)-(usedLuz[g.id]||0)).toFixed(3)) })).filter(g=>g.available>0.001)
+    const mm={}; (m||[]).forEach(x=>{mm[x.id]=x})
+    setStockMode(true); setOrder(null)
+    setBoms(bomList||[]); setBomId((bomList||[]).length===1 ? bomList[0].id : '')
+    setBigbags(bbs); setBigbagId(bb.id); setUnits(''); setMats(mm); setPkgStock(ps||[]); setPacks({}); setPackedBy(''); setView('pack')
+  }
+
   const bigbag = bigbags.find(b=>b.id===bigbagId)
-  const gramatura = parseFloat(order?.bom?.gramatura_kg||0)
-  const upp = parseInt(order?.bom?.units_per_pallet||0)
-  const remainingUnits = order ? Math.max(0, parseInt(order.qty_units||0) - (packedByOrder[order.id]||0)) : 0
+  const effBom = stockMode ? (boms.find(b=>b.id===bomId)||null) : (order?.bom||null)
+  const gramatura = parseFloat(effBom?.gramatura_kg||0)
+  const upp = parseInt(effBom?.units_per_pallet||0)
   const maxUnitsFromBB = (bigbag && gramatura>0) ? Math.floor(bigbag.available/gramatura) : 0
+  const remainingUnits = stockMode ? maxUnitsFromBB : (order ? Math.max(0, parseInt(order.qty_units||0) - (packedByOrder[order.id]||0)) : 0)
 
   // zapotrzebowanie opakowań dla u sztuk
   function needs(u) {
     const pallets = upp>0 ? Math.ceil(u/upp) : 0
     const list=[]
-    const b=order?.bom||{}
+    const b=effBom||{}
     if (b.unit_material_id) list.push({ material_id:b.unit_material_id, qty:u, label:'worek' })
     if (b.pallet_material_id && pallets>0) list.push({ material_id:b.pallet_material_id, qty:pallets, label:'paleta' })
     ;(b.bom_items||[]).forEach(bi=>{ const naP=bi.per==='paleta'; const q=naP?parseFloat(bi.qty_per||0)*pallets:parseFloat(bi.qty_per||0)*u; if(q>0) list.push({ material_id:bi.packaging_material_id, qty:parseFloat(q.toFixed(3)), label:naP?'na paletę':'na szt.' }) })
@@ -108,7 +137,8 @@ export default function Pakowanie() {
   }
 
   async function confirmPack() {
-    if (!order) return
+    if (!order && !stockMode) return
+    if (stockMode && !bomId) { setError('Wybierz produkt (BOM) do spakowania'); return }
     if (!bigbagId) { setError('Wybierz bigbag (półprodukt) do pakowania'); return }
     if (!(u>0)) { setError('Podaj liczbę sztuk do spakowania'); return }
     if (gramatura<=0) { setError('BOM nie ma gramatury'); return }
@@ -130,30 +160,45 @@ export default function Pakowanie() {
     const lot=`LP${yy}${seq}${bbno}`
     const today=now.toISOString().slice(0,10)
 
-    const { data: op, error: e1 } = await supabase.from('packing_operations').insert({ order_id:order.id, packing_date:today, packed_by:packedBy||profile?.full_name||null, total_packed_kg:mass, pack_number:packNo, lot_code:lot }).select().single()
+    const orderId = stockMode ? null : order.id
+    const { data: op, error: e1 } = await supabase.from('packing_operations').insert({ order_id:orderId, packing_date:today, packed_by:packedBy||profile?.full_name||null, total_packed_kg:mass, pack_number:packNo, lot_code:lot }).select().single()
     if (e1) { setError(e1.message); setSaving(false); return }
     await supabase.from('packing_consumed').insert({ packing_operation_id:op.id, source_finished_good_id:bigbag.id, quantity_kg:mass })
-    await supabase.from('finished_goods').insert({ production_batch_id:bigbag.production_batch_id, order_id:order.id, received_date:today, quantity_kg:mass, form:'spakowane', unit_type:'worek', unit_weight_kg:gramatura, unit_count:u, pallets:plan.pallets||null, bags_per_pallet:upp||null, packing_operation_id:op.id, lot_code:lot, created_by:profile?.id })
+    await supabase.from('finished_goods').insert({ production_batch_id:bigbag.production_batch_id, order_id:orderId, received_date:today, quantity_kg:mass, form:'spakowane', unit_type:'worek', unit_weight_kg:gramatura, unit_count:u, pallets:plan.pallets||null, bags_per_pallet:upp||null, packing_operation_id:op.id, lot_code:lot, created_by:profile?.id })
     const pcRows=[]
     plan.list.forEach(n=>{ (packs[n.material_id]||[]).forEach(l=>{ if(l.batchId&&num(l.qty)>0) pcRows.push({ packing_operation_id:op.id, packaging_batch_id:l.batchId, quantity:num(l.qty) }) }) })
     if (pcRows.length) await supabase.from('packaging_consumed').insert(pcRows)
 
-    const packedAfter=(packedByOrder[order.id]||0)+u
-    const newStatus = packedAfter+0.0001 >= parseInt(order.qty_units||0) ? 'spakowane' : order.status
-    await supabase.from('orders').update({ status:newStatus, updated_at:new Date().toISOString() }).eq('id', order.id)
+    if (!stockMode) {
+      const packedAfter=(packedByOrder[order.id]||0)+u
+      const newStatus = packedAfter+0.0001 >= parseInt(order.qty_units||0) ? 'spakowane' : order.status
+      await supabase.from('orders').update({ status:newStatus, updated_at:new Date().toISOString() }).eq('id', order.id)
+    }
 
-    setSaving(false); setView('list'); setOrder(null); load()
+    setSaving(false); setView('list'); setOrder(null); setStockMode(false); load()
   }
 
   // ===== PACK VIEW =====
-  if (view==='pack' && order) {
+  if (view==='pack' && (order || stockMode)) {
     return (
       <div>
         <div className="page-header">
-          <div><div className="page-title">Pakowanie — {order.order_number}</div><div className="page-sub">{klient(order)} · {order.bom?.code_ext} · bigbag → worki wg BOM</div></div>
-          <button className="btn btn-sm" onClick={()=>{setView('list');setOrder(null)}}>← Wróć</button>
+          <div><div className="page-title">{stockMode ? 'Pakowanie na magazyn (bez zlecenia)' : `Pakowanie — ${order.order_number}`}</div><div className="page-sub">{stockMode ? 'Półprodukt z magazynu → worki wg wybranego BOM' : `${klient(order)} · ${order.bom?.code_ext} · bigbag → worki wg BOM`}</div></div>
+          <button className="btn btn-sm" onClick={()=>{setView('list');setOrder(null);setStockMode(false)}}>← Wróć</button>
         </div>
         {error && <div className="err-box" style={{marginBottom:10}}>{error}</div>}
+
+        {stockMode && (
+          <div className="card" style={{marginBottom:12}}>
+            <div><label>Produkt (BOM) do spakowania *</label>
+              <select value={bomId} onChange={e=>{ setBomId(e.target.value); setUnits('') }}>
+                <option value="">— wybierz produkt / gramaturę —</option>
+                {boms.map(b=><option key={b.id} value={b.id}>{b.code_ext} · {parseFloat(b.gramatura_kg||0)} kg/szt</option>)}
+              </select>
+              {boms.length===0 && <span className="badge b-err" style={{fontSize:9,marginLeft:4}}>brak BOM dla receptury tego bigbaga</span>}
+            </div>
+          </div>
+        )}
 
         <div className="card" style={{marginBottom:12}}>
           <div className="fr">
@@ -168,8 +213,9 @@ export default function Pakowanie() {
             <div><label>Pakujący</label><input value={packedBy} onChange={e=>setPackedBy(e.target.value)} placeholder="imię i nazwisko" /></div>
           </div>
           <div className="muted" style={{fontSize:12,marginTop:6}}>
-            Cel zlecenia: <b>{fmt(order.qty_units)}</b> szt · spakowano: <b>{fmt(packedByOrder[order.id]||0)}</b> · pozostało: <b>{fmt(remainingUnits)}</b>
-            {bigbag && <> · z bigbaga max: <b>{maxUnitsFromBB}</b> szt ({fmt(bigbag.available)} kg) · masa teraz: <b>{fmt(u*gramatura)}</b> kg · palet: <b>{plan.pallets}</b></>}
+            {!stockMode && <>Cel zlecenia: <b>{fmt(order.qty_units)}</b> szt · spakowano: <b>{fmt(packedByOrder[order.id]||0)}</b> · pozostało: <b>{fmt(remainingUnits)}</b></>}
+            {stockMode && <>Pakowanie na magazyn{effBom ? <> · gramatura: <b>{gramatura}</b> kg/szt</> : ' — wybierz BOM'}</>}
+            {bigbag && gramatura>0 && <> · z bigbaga max: <b>{maxUnitsFromBB}</b> szt ({fmt(bigbag.available)} kg) · masa teraz: <b>{fmt(u*gramatura)}</b> kg · palet: <b>{plan.pallets}</b></>}
           </div>
         </div>
 
@@ -215,7 +261,8 @@ export default function Pakowanie() {
         <div><div className="page-title">Pakowanie</div><div className="page-sub">Pakowanie bigbagów w worki wg BOM — ręczny wybór partii opakowań</div></div>
         <button className="btn btn-sm" onClick={load}>↻</button>
       </div>
-      <div style={{background:'#fff',border:'0.5px solid #D3D1C7',borderRadius:8,overflowX:'auto'}}>
+      <div style={{fontSize:13,fontWeight:600,color:'#0F6E56',margin:'4px 0 8px'}}>Zlecenia sprzedaży do pakowania ({salesOrders.length})</div>
+      <div style={{background:'#fff',border:'0.5px solid #D3D1C7',borderRadius:8,overflowX:'auto',marginBottom:18}}>
         <table style={{minWidth:860}}>
           <thead><tr><th>Nr zlecenia</th><th>Klient</th><th>Wyrób (BOM)</th><th style={{textAlign:'right'}}>Cel (szt.)</th><th style={{textAlign:'right'}}>Spakowano</th><th style={{textAlign:'right'}}>Pozostało</th><th></th></tr></thead>
           <tbody>
@@ -232,6 +279,25 @@ export default function Pakowanie() {
                 <td>{canEdit && rem>0 && <button className="btn btn-sm btn-primary" onClick={()=>openPack(o)}>Pakuj</button>}</td>
               </tr>
             )})}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{fontSize:13,fontWeight:600,color:'#BA7517',margin:'4px 0 8px'}}>Półprodukt na magazynie — pakowanie bez zlecenia ({stockBigbags.length})</div>
+      <div style={{background:'#fff',border:'0.5px solid #D3D1C7',borderRadius:8,overflowX:'auto'}}>
+        <table style={{minWidth:760}}>
+          <thead><tr><th>Bigbag (kod)</th><th>LOT</th><th>Receptura</th><th style={{textAlign:'right'}}>Dostępne (kg)</th><th></th></tr></thead>
+          <tbody>
+            {!loading && stockBigbags.length===0 && <tr><td colSpan={5} style={{textAlign:'center',padding:20,color:'#888'}}>Brak półproduktu na magazynie</td></tr>}
+            {stockBigbags.map(b=>(
+              <tr key={b.id}>
+                <td style={{fontFamily:'monospace',fontSize:11}}>{b.bb_code||'—'}</td>
+                <td style={{fontFamily:'monospace',fontSize:12}}>{b.lot_code||'—'}</td>
+                <td style={{fontSize:12}}>{b.production_batches?.recipes?.code} — {b.production_batches?.recipes?.name}</td>
+                <td style={{textAlign:'right',fontWeight:600}}>{fmt(b.available)} kg</td>
+                <td>{canEdit && <button className="btn btn-sm btn-primary" onClick={()=>openPackStock(b)}>Pakuj na magazyn</button>}</td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
