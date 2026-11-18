@@ -47,7 +47,7 @@ export default function Planowanie() {
       supabase.from('v_finished_goods').select('recipe_code,available_kg,form'),
     ])
     const usedMap={}; (used||[]).forEach(u=>{ if(u.ingredient_batch_id) usedMap[u.ingredient_batch_id]=(usedMap[u.ingredient_batch_id]||0)+parseFloat(u.quantity_used_kg||0) })
-    const avail={}; (stock||[]).forEach(x=>{ const a=parseFloat(x.current_kg)-(usedMap[x.id]||0); if(a>0.001)(avail[x.ingredient_id]=avail[x.ingredient_id]||[]).push({id:x.id,lot:x.delivery_lot,available:parseFloat(a.toFixed(3))}) })
+    const avail={}; (stock||[]).forEach(x=>{ const a=parseFloat(x.current_kg)-(usedMap[x.id]||0); if(a>0.001)(avail[x.ingredient_id]=avail[x.ingredient_id]||[]).push({id:x.id,lot:x.delivery_lot,recv:x.received_date,available:parseFloat(a.toFixed(3))}) })
     const lz={}; (vfg||[]).forEach(g=>{ if(g.form!=='spakowane'){ const a=parseFloat(g.available_kg||0); if(a>0.001) lz[g.recipe_code]=(lz[g.recipe_code]||0)+a } })
     setSalesNowe(s||[]); setProdOrders(po||[]); setRecipes(rec||[]); setAvailByIng(avail); setLuzStock(lz)
     setLoading(false)
@@ -299,7 +299,7 @@ ${bbBlocks}
                   {(availByIng[it.ingredient_id]||[]).length===0&&<div className="badge b-err" style={{fontSize:9,marginBottom:4}}>brak surowca na magazynie</div>}
                   {lines.map((l,li)=>{const opts=optionsFor(it.ingredient_id,l.batchId,l.qty);return(
                     <div key={li} className="flex" style={{gap:8,marginBottom:4,alignItems:'center'}}>
-                      <select value={l.batchId||''} onChange={e=>setLine(key,li,'batchId',e.target.value)} style={{minWidth:230,flex:1}}><option value="">— wybierz partię —</option>{opts.map(b=><option key={b.id} value={b.id}>{b.lot} (pozostało {b.remaining} kg)</option>)}</select>
+                      <select value={l.batchId||''} onChange={e=>setLine(key,li,'batchId',e.target.value)} style={{minWidth:230,flex:1}}><option value="">— wybierz partię —</option>{opts.map(b=><option key={b.id} value={b.id}>{b.lot} · przyj. {b.recv||'—'} (pozostało {b.remaining} kg)</option>)}</select>
                       <input type="text" inputMode="decimal" value={l.qty||''} onChange={e=>setLine(key,li,'qty',e.target.value)} style={{width:100,textAlign:'right'}} placeholder="kg" />
                       {lines.length>1&&<button className="btn btn-sm btn-danger" style={{padding:'2px 7px'}} onClick={()=>delLine(key,li)}>×</button>}
                     </div>)})}
