@@ -278,22 +278,26 @@ export default function PrzyjecieDostawy() {
     if (!e.delivery_lot) { setEditError('Nr partii jest wymagany'); return }
     if (!qty || qty <= 0) { setEditError('Podaj ilość'); return }
     setEditSaving(true); setEditError('')
+    let res
     if (e.type === 'surowiec') {
       const price = num(e.unit_price)
-      const { error: err } = await supabase.from('ingredient_batches').update({
+      res = await supabase.from('ingredient_batches').update({
         delivery_lot:e.delivery_lot, supplier_name:e.supplier_name||null, invoice_number:e.invoice_number||null,
         production_date:e.production_date||null, expiry_date:e.expiry_date||null, received_date:e.received_date||null,
         quantity_kg:qty, unit_price_pln:price, total_value_pln: price!=null ? parseFloat((price*qty).toFixed(2)) : null,
         warehouse_location:e.warehouse_location||null, status:e.status, updated_at:new Date().toISOString(),
-      }).eq('id', e.id)
-      if (err) { setEditError(err.message); setEditSaving(false); return }
+      }).eq('id', e.id).select('id')
     } else {
-      const { error: err } = await supabase.from('packaging_batches').update({
+      res = await supabase.from('packaging_batches').update({
         delivery_lot:e.delivery_lot, supplier_id:e.supplier_id||null,
         expiry_date:e.expiry_date||null, received_date:e.received_date||null,
         quantity:qty, unit_price:num(e.unit_price), warehouse_location:e.warehouse_location||null, status:e.status,
-      }).eq('id', e.id)
-      if (err) { setEditError(err.message); setEditSaving(false); return }
+      }).eq('id', e.id).select('id')
+    }
+    if (res.error) { setEditError(res.error.message); setEditSaving(false); return }
+    if (!res.data || res.data.length===0) {
+      setEditError('Nie zapisano zmian — brak uprawnień w bazie (RLS) do edycji dostawy. Uruchom etap14 w Supabase i spróbuj ponownie.')
+      setEditSaving(false); return
     }
     setEditSaving(false); setEditModal(false); load()
   }
