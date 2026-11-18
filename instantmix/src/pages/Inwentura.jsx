@@ -42,16 +42,18 @@ export default function Inwentura() {
       supabase.from('ingredient_batches').select('ingredient_id,quantity_kg,unit_price_pln').gte('received_date',d1).lte('received_date',d2),
       supabase.from('stock_corrections').select('delta_kg,ingredient_batches(ingredient_id,unit_price_pln)').lt('event_date',d1),
       supabase.from('stock_corrections').select('delta_kg,ingredient_batches(ingredient_id,unit_price_pln)').gte('event_date',d1).lte('event_date',d2),
-      supabase.from('production_batch_items').select('ingredient_id,quantity_used_kg,ingredient_batches(unit_price_pln),production_batches(production_date)').lt('production_batches.production_date',d1),
-      supabase.from('production_batch_items').select('ingredient_id,quantity_used_kg,ingredient_batches(unit_price_pln),production_batches(production_date)').gte('production_batches.production_date',d1).lte('production_batches.production_date',d2),
+      supabase.from('production_batch_items').select('ingredient_id,quantity_used_kg,ingredient_batches(unit_price_pln),production_batches(produced_at,created_at)'),
+      supabase.from('production_batch_items').select('ingredient_id,quantity_used_kg,ingredient_batches(unit_price_pln),production_batches(produced_at,created_at)'),
     ])
     const price = x => parseFloat(x||0)
+    // data rozchodu produkcyjnego = data produkcji (produced_at), w razie braku data planu (created_at)
+    const pdOf = p => { const d = p.production_batches?.produced_at || p.production_batches?.created_at; return d ? String(d).slice(0,10) : null }
     const boP = sumBy(pBefore, p=>p.ingredient_id, p=>p.quantity_kg, p=>price(p.unit_price_pln)*parseFloat(p.quantity_kg))
     const boK = sumBy(kBefore, k=>k.ingredient_batches?.ingredient_id, k=>k.delta_kg, k=>price(k.ingredient_batches?.unit_price_pln)*parseFloat(k.delta_kg))
-    const boR = sumBy((rBefore||[]).filter(p=>p.production_batches?.production_date<d1), p=>p.ingredient_id, p=>p.quantity_used_kg, p=>price(p.ingredient_batches?.unit_price_pln)*parseFloat(p.quantity_used_kg))
+    const boR = sumBy((rBefore||[]).filter(p=>{const d=pdOf(p);return d&&d<d1}), p=>p.ingredient_id, p=>p.quantity_used_kg, p=>price(p.ingredient_batches?.unit_price_pln)*parseFloat(p.quantity_used_kg))
     const przych = sumBy(pW, p=>p.ingredient_id, p=>p.quantity_kg, p=>price(p.unit_price_pln)*parseFloat(p.quantity_kg))
     const kor = sumBy(kW, k=>k.ingredient_batches?.ingredient_id, k=>k.delta_kg, k=>price(k.ingredient_batches?.unit_price_pln)*parseFloat(k.delta_kg))
-    const rozch = sumBy((rW||[]).filter(p=>{const d=p.production_batches?.production_date;return d&&d>=d1&&d<=d2}), p=>p.ingredient_id, p=>p.quantity_used_kg, p=>price(p.ingredient_batches?.unit_price_pln)*parseFloat(p.quantity_used_kg))
+    const rozch = sumBy((rW||[]).filter(p=>{const d=pdOf(p);return d&&d>=d1&&d<=d2}), p=>p.ingredient_id, p=>p.quantity_used_kg, p=>price(p.ingredient_batches?.unit_price_pln)*parseFloat(p.quantity_used_kg))
     return (ings||[]).map(ing => mkRow(ing.id, ing.code, ing.name, 'kg', boP, boK, boR, przych, kor, rozch))
       .filter(nonEmpty)
   }
