@@ -27,6 +27,13 @@ export default function Magazyn() {
   const [corrSaving, setCorrSaving] = useState(false)
   const [corrErr, setCorrErr] = useState('')
 
+  // Edycja / cofnięcie korekty
+  const [editCorr, setEditCorr] = useState(null)
+  const [editCorrForm, setEditCorrForm] = useState({ correction_type:'ubytek_uszkodzenie', delta_kg:'', reason:'', event_date:today() })
+  const [editCorrSaving, setEditCorrSaving] = useState(false)
+  const [editCorrErr, setEditCorrErr] = useState('')
+  const [delCorr, setDelCorr] = useState(null)
+
 
   useEffect(() => { load() }, [])
 
@@ -148,6 +155,65 @@ export default function Magazyn() {
     const ingId = corrBatch.ingredient_id
     setCorrBatch(null)
     await refreshDetails(ingId); load()
+  }
+
+  // ── Edycja korekty ──
+  function openEditCorr(c) {
+    setEditCorr(c)
+    setEditCorrForm({ correction_type:c.correction_type, delta_kg:String(c.delta_kg), reason:c.reason||'', event_date:c.event_date||today() })
+    setEditCorrErr('')
+  }
+  async function saveEditCorr() {
+    if (editCorrForm.correction_type==='inne' && !editCorrForm.reason.trim()) { setEditCorrErr('Dla typu „Inne" podaj opis przyczyny'); return }
+    if (!(num(editCorrForm.delta_kg) !== 0)) { setEditCorrErr('Podaj korektę ilości (ujemna = ubytek)'); return }
+    setEditCorrSaving(true); setEditCorrErr('')
+    const res = await supabase.from('stock_corrections').update({
+      correction_type: editCorrForm.correction_type,
+      delta_kg: parseFloat(num(editCorrForm.delta_kg).toFixed(3)),
+      reason: editCorrForm.reason.trim() || CORR_LABELS[editCorrForm.correction_type],
+      event_date: editCorrForm.event_date,
+    }).eq('id', editCorr.id).select('id')
+    if (res.error) { setEditCorrErr(res.error.message); setEditCorrSaving(false); return }
+    if (!res.data || res.data.length===0) { setEditCorrErr('Nie zapisano — brak uprawnień (RLS). Uruchom etap14.'); setEditCorrSaving(false); return }
+    setEditCorrSaving(false)
+    const ingId = editCorr.ingredient_batches?.ingredient_id
+    setEditCorr(null)
+    if (ingId) await refreshDetails(ingId); load()
+  }
+
+  // ── Cofnięcie (usunięcie) korekty ──
+  async function deleteCorrection(c) {
+    const res = await supabase.from('stock_corrections').delete().eq('id', c.id).select('id')
+    if (res.error) { setDelCorr(null); alert('Błąd: '+res.error.message); return }
+    if (!res.data || res.data.length===0) { setDelCorr(null); alert('Nie cofnięto — brak uprawnień (RLS). Uruchom etap14.'); return }
+    // jeśli to była utylizacja pełna, przywróć partię do „dopuszczona"
+    if (c.correction_type==='utylizacja_pelna' && c.ingredient_batch_id) {
+      await supabase.from('ingredient_batches').update({ status:'dopuszczona' }).eq('id', c.ingredient_batch_id)
+    }
+    const ingId = c.ingredient_batches?.ingredient_id
+    setDelCorr(null)
+    if (ingId) await refreshDetails(ingId); load()
+  }
+
+  // ── PDF pojedynczej korekty (protokół) ──
+  function printOneCorrection(c) {
+    const ing = c.ingredient_batches?.ingredients
+    const dateStr = new Date().toLocaleDateString('pl-PL')
+    const delta = parseFloat(c.delta_kg)
+    const html = `<!DOCTYPE html><html lang="pl"><head><meta charset="UTF-8"><title>Protokół korekty ${c.id?.slice(0,8)||''}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:12px;padding:24px;color:#1a1a18}.header{display:flex;justify-content:space-between;border-bottom:2px solid #0F6E56;padding-bottom:10px;margin-bottom:16px}.company{font-size:17px;font-weight:bold;color:#0F6E56}.title{font-size:14px;font-weight:bold;margin-top:4px}table{width:100%;border-collapse:collapse;margin:10px 0}td{padding:8px 10px;border:1px solid #D3D1C7}td.l{background:#F1EFE8;font-weight:bold;width:38%}.big{font-size:16px;font-weight:bold;color:${delta<0?'#A32D2D':'#0F6E56'}}.sig-grid{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:40px}.sig-line{border-bottom:1.5px solid #333;margin-top:34px;margin-bottom:4px}.sig-label{font-size:10px;color:#888;text-transform:uppercase}@media print{@page{margin:14mm;size:A4}}</style></head><body>
+<div class="header"><div><div class="company">InstantMix Pro</div><div class="title">Protokół korekty stanu magazynowego</div></div><div style="text-align:right;font-size:10px;color:#555">Data wydruku: ${dateStr}<br>Nr dok.: KOR/${(c.id||'').slice(0,8).toUpperCase()}</div></div>
+<table>
+<tr><td class="l">Data zdarzenia</td><td>${c.event_date||'—'}</td></tr>
+<tr><td class="l">Składnik</td><td><b>${ing?.code||'—'} — ${ing?.name||'—'}</b></td></tr>
+<tr><td class="l">Nr partii dostawy</td><td style="font-family:monospace">${c.ingredient_batches?.delivery_lot||'—'}</td></tr>
+<tr><td class="l">Typ korekty</td><td>${CORR_LABELS[c.correction_type]||c.correction_type}</td></tr>
+<tr><td class="l">Wielkość korekty</td><td class="big">${delta>0?'+':''}${delta.toFixed(3)} kg</td></tr>
+<tr><td class="l">Przyczyna</td><td>${(c.reason||'').replace(/</g,'&lt;')}</td></tr>
+<tr><td class="l">Zatwierdził</td><td>${profMap[c.approved_by]||'—'}</td></tr>
+</table>
+<div class="sig-grid"><div><div class="sig-label">Sporządził</div><div class="sig-line"></div><div class="sig-label">Imię, nazwisko i podpis</div></div><div><div class="sig-label">Zatwierdził (Kierownik)</div><div class="sig-line"></div><div class="sig-label">Imię, nazwisko i podpis</div></div></div>
+<script>window.onload=function(){window.print()}</script></body></html>`
+    const win = window.open('','_blank'); win.document.write(html); win.document.close()
   }
 
   function printCorrections() {
@@ -381,6 +447,40 @@ export default function Magazyn() {
                             </tbody>
                           </table>
                         )}
+                        {(() => {
+                          const corrList = (allCorr||[]).filter(c => c.ingredient_batches?.ingredient_id === r.id)
+                          if (corrList.length===0) return null
+                          return (
+                            <div style={{ marginTop:12 }}>
+                              <div style={{ fontSize:12, fontWeight:600, color:'#E65100', marginBottom:4 }}>Korekty tej pozycji ({corrList.length})</div>
+                              <table style={{ width:'auto', minWidth:620 }}>
+                                <thead><tr>
+                                  <th>Data</th><th>Nr partii</th><th>Typ</th>
+                                  <th style={{ textAlign:'right' }}>Korekta (kg)</th><th>Przyczyna</th><th>Zatwierdził</th><th>Akcje</th>
+                                </tr></thead>
+                                <tbody>
+                                  {corrList.map(c => (
+                                    <tr key={c.id}>
+                                      <td className="muted" style={{ fontSize:12 }}>{c.event_date||'—'}</td>
+                                      <td style={{ fontFamily:'monospace', fontSize:11 }}>{c.ingredient_batches?.delivery_lot||'—'}</td>
+                                      <td style={{ fontSize:12 }}>{CORR_LABELS[c.correction_type]||c.correction_type}</td>
+                                      <td style={{ textAlign:'right', fontWeight:600, color: parseFloat(c.delta_kg)<0?'#A32D2D':'#0F6E56' }}>{parseFloat(c.delta_kg)>0?'+':''}{parseFloat(c.delta_kg).toFixed(3)}</td>
+                                      <td style={{ fontSize:12 }}>{c.reason||'—'}</td>
+                                      <td style={{ fontSize:12 }}>{profMap[c.approved_by]||'—'}</td>
+                                      <td>
+                                        <div className="flex" style={{ gap:4 }}>
+                                          <button className="btn btn-sm" style={{ fontSize:10, padding:'2px 7px' }} onClick={() => printOneCorrection(c)} title="Protokół PDF">PDF</button>
+                                          {isAdmin && <button className="btn btn-sm" style={{ fontSize:10, padding:'2px 7px', background:'#E6F1FB', color:'#0C447C', border:'0.5px solid #B5D4F4' }} onClick={() => openEditCorr(c)}>Edytuj</button>}
+                                          {isAdmin && <button className="btn btn-sm btn-danger" style={{ fontSize:10, padding:'2px 7px' }} onClick={() => setDelCorr(c)}>Cofnij</button>}
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )
+                        })()}
                       </div>
                     </td>
                   </tr>
@@ -425,6 +525,48 @@ export default function Magazyn() {
           <div className="modal-footer">
             <button className="btn" onClick={() => setCorrBatch(null)}>Anuluj</button>
             <button className="btn btn-danger" onClick={saveCorrection} disabled={corrSaving}>{corrSaving?'Zapisywanie...':'Zapisz korektę'}</button>
+          </div>
+        </div>
+      </div>
+
+      {/* Modal edycji korekty */}
+      <div className={`modal-overlay ${editCorr?'open':''}`} onClick={e => e.target===e.currentTarget && setEditCorr(null)}>
+        <div className="modal" style={{ maxWidth:520 }}>
+          <div className="modal-title">Edycja korekty</div>
+          {editCorr && <div style={{ background:'#F1EFE8', borderRadius:8, padding:10, marginBottom:12, fontSize:13 }}>
+            Partia: <span className="lot">{editCorr.ingredient_batches?.delivery_lot}</span>
+          </div>}
+          {editCorrErr && <div className="err-box">{editCorrErr}</div>}
+          <div className="fr">
+            <div><label>Typ korekty / przyczyna</label>
+              <select value={editCorrForm.correction_type} onChange={e => setEditCorrForm(f=>({...f, correction_type:e.target.value}))}>
+                {Object.entries(CORR_LABELS).map(([k,v]) => <option key={k} value={k}>{v}</option>)}
+              </select>
+            </div>
+            <div><label>Korekta ilości (kg) — ujemna = ubytek</label>
+              <input type="text" inputMode="decimal" value={editCorrForm.delta_kg} onChange={e => setEditCorrForm(f=>({...f, delta_kg:e.target.value}))} />
+            </div>
+          </div>
+          <div style={{ marginBottom:10 }}><label>{editCorrForm.correction_type==='inne' ? 'Opis przyczyny (wymagany dla „Inne") *' : 'Dodatkowy opis (opcjonalnie)'}</label><input value={editCorrForm.reason} onChange={e => setEditCorrForm(f=>({...f, reason:e.target.value}))} /></div>
+          <div><label>Data zdarzenia</label><input type="date" value={editCorrForm.event_date} onChange={e => setEditCorrForm(f=>({...f, event_date:e.target.value}))} /></div>
+          <div className="modal-footer">
+            <button className="btn" onClick={() => setEditCorr(null)}>Anuluj</button>
+            <button className="btn btn-primary" onClick={saveEditCorr} disabled={editCorrSaving}>{editCorrSaving?'Zapisywanie...':'Zapisz zmiany'}</button>
+          </div>
+        </div>
+      </div>
+
+      {/* Modal cofnięcia korekty */}
+      <div className={`modal-overlay ${delCorr?'open':''}`} onClick={e => e.target===e.currentTarget && setDelCorr(null)}>
+        <div className="modal" style={{ maxWidth:440 }}>
+          <div className="modal-title">Cofnij korektę</div>
+          <div className="warn-box">
+            Cofnąć korektę <b>{delCorr ? (CORR_LABELS[delCorr.correction_type]||delCorr.correction_type) : ''}</b> ({delCorr ? (parseFloat(delCorr.delta_kg)>0?'+':'')+parseFloat(delCorr.delta_kg).toFixed(3) : ''} kg) na partii <b>{delCorr?.ingredient_batches?.delivery_lot}</b>?<br/><br/>
+            Stan magazynowy wróci do wartości sprzed korekty.{delCorr?.correction_type==='utylizacja_pelna' && <> Partia zostanie przywrócona do statusu „dopuszczona".</>}
+          </div>
+          <div className="modal-footer">
+            <button className="btn" onClick={() => setDelCorr(null)}>Anuluj</button>
+            <button className="btn btn-danger" onClick={() => deleteCorrection(delCorr)}>Tak, cofnij korektę</button>
           </div>
         </div>
       </div>
