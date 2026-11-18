@@ -28,6 +28,7 @@ export default function Produkcja() {
   const [modal, setModal] = useState(null)
   const [name, setName] = useState('')
   const [foreman, setForeman] = useState('')
+  const [prodDate, setProdDate] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -71,7 +72,11 @@ export default function Produkcja() {
   const bbCountOf = o => new Set((o.production_wsady||[]).map(w=>w.bb_plan_no||1)).size
 
   // ── Workflow (podpisy) ──
-  function openStage(order) { setModal({ order, from: order.prod_stage }); setName(''); setForeman(''); setError('') }
+  function openStage(order) {
+    setModal({ order, from: order.prod_stage }); setName(''); setForeman(''); setError('')
+    // data produkcji: zachowaj zadaną w planowaniu, inaczej dzisiejsza
+    setProdDate(order.produced_at ? String(order.produced_at).slice(0,10) : new Date().toISOString().slice(0,10))
+  }
 
   async function confirmStage() {
     const { order, from } = modal
@@ -93,7 +98,7 @@ export default function Produkcja() {
         if (e2) { setError(e2.message); setSaving(false); return }
         await supabase.from('bigbag_wsady').insert(list.map(w=>({ finished_good_id:fg.id, wsad_id:w.id })))
       }
-      await supabase.from('production_batches').update({ prod_stage:'wyprodukowana', operator:name.trim(), foreman:foreman.trim()||null, produced_at:nowISO }).eq('id', order.id)
+      await supabase.from('production_batches').update({ prod_stage:'wyprodukowana', operator:name.trim(), foreman:foreman.trim()||null, produced_at: prodDate || nowISO }).eq('id', order.id)
     } else if (from === 'wyprodukowana') {
       await supabase.from('production_batches').update({ prod_stage:'zaakceptowana', accepted_by:name.trim(), accepted_at:nowISO }).eq('id', order.id)
       const orderIds=(order.production_order_sales||[]).map(x=>x.order_id)
@@ -124,14 +129,14 @@ export default function Produkcja() {
   // ── Edycja nagłówka ──
   function openEditH(p) {
     setEditH(p)
-    setEditHForm({ lot_number:p.lot_number||'', client:p.client||'', quantity_kg:p.quantity_kg??'', planned_by:p.planned_by||'', operator:p.operator||'', accepted_by:p.accepted_by||'', prod_stage:p.prod_stage||'planowana' })
+    setEditHForm({ lot_number:p.lot_number||'', client:p.client||'', quantity_kg:p.quantity_kg??'', produced_at:p.produced_at?String(p.produced_at).slice(0,10):'', planned_by:p.planned_by||'', operator:p.operator||'', accepted_by:p.accepted_by||'', prod_stage:p.prod_stage||'planowana' })
     setError('')
   }
   async function saveEditH() {
     if (!editHForm.lot_number.trim()) { setError('Nr produkcji jest wymagany'); return }
     setSaving(true); setError('')
     const { error: err } = await supabase.from('production_batches').update({
-      lot_number:editHForm.lot_number.trim(), client:editHForm.client||null, quantity_kg:num(editHForm.quantity_kg),
+      lot_number:editHForm.lot_number.trim(), client:editHForm.client||null, quantity_kg:num(editHForm.quantity_kg), produced_at:editHForm.produced_at||null,
       planned_by:editHForm.planned_by||null, operator:editHForm.operator||null, accepted_by:editHForm.accepted_by||null,
       prod_stage:editHForm.prod_stage, updated_at:new Date().toISOString(),
     }).eq('id', editH.id)
@@ -440,7 +445,10 @@ ${bbBlocks}
               </div>
               {error && <div className="err-box">{error}</div>}
               <div><label>{step.who} — imię i nazwisko *</label><input value={name} onChange={e=>setName(e.target.value)} placeholder="np. Jan Kowalski" /></div>
-              {modal.from==='pobrana' && <div style={{marginTop:8}}><label>Brygadzista (opc.)</label><input value={foreman} onChange={e=>setForeman(e.target.value)} /></div>}
+              {modal.from==='pobrana' && <div className="fr" style={{marginTop:8}}>
+                <div><label>Data produkcji</label><input type="date" value={prodDate} onChange={e=>setProdDate(e.target.value)} /></div>
+                <div><label>Brygadzista (opc.)</label><input value={foreman} onChange={e=>setForeman(e.target.value)} /></div>
+              </div>}
               <div className="modal-footer">
                 <button className="btn" onClick={()=>setModal(null)}>Anuluj</button>
                 <button className="btn btn-primary" onClick={confirmStage} disabled={saving}>{saving?'Zapisywanie...':step.label}</button>
@@ -460,8 +468,9 @@ ${bbBlocks}
             <div><label>Nr produkcji *</label><input value={editHForm.lot_number||''} onChange={e=>setEditHForm(f=>({...f,lot_number:e.target.value}))} /></div>
             <div><label>Klient</label><input value={editHForm.client||''} onChange={e=>setEditHForm(f=>({...f,client:e.target.value}))} /></div>
           </div>
-          <div className="fr">
+          <div className="fr3">
             <div><label>Masa (kg)</label><input type="text" inputMode="decimal" value={editHForm.quantity_kg||''} onChange={e=>setEditHForm(f=>({...f,quantity_kg:e.target.value}))} /></div>
+            <div><label>Data produkcji</label><input type="date" value={editHForm.produced_at||''} onChange={e=>setEditHForm(f=>({...f,produced_at:e.target.value}))} /></div>
             <div><label>Status</label>
               <select value={editHForm.prod_stage||'planowana'} onChange={e=>setEditHForm(f=>({...f,prod_stage:e.target.value}))}>
                 {Object.entries(STAGE).map(([k,v])=><option key={k} value={k}>{v}</option>)}
