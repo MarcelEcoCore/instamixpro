@@ -88,13 +88,16 @@ export default function Produkcja() {
     } else if (from === 'pobrana') {
       const seq = order.lot_number.split('-')[2] || ''
       const groups={}; (order.production_wsady||[]).forEach(w=>{const b=w.bb_plan_no||1;(groups[b]=groups[b]||[]).push(w)})
-      const now=new Date(), yy=String(now.getFullYear()).slice(2), mm=String(now.getMonth()+1).padStart(2,'0'), dd=String(now.getDate()).padStart(2,'0')
+      // data w LOT-cie i data przyjęcia wyrobu = data produkcji (jeśli podana), inaczej dziś
+      const pd = prodDate ? new Date(prodDate+'T00:00:00') : new Date()
+      const prodDay = prodDate || new Date().toISOString().slice(0,10)
+      const yy=String(pd.getFullYear()).slice(2), mm=String(pd.getMonth()+1).padStart(2,'0'), dd=String(pd.getDate()).padStart(2,'0')
       for (const bb of Object.keys(groups).map(Number).sort((a,b)=>a-b)) {
         const list=groups[bb].sort((a,b)=>a.wsad_no-b.wsad_no)
         const mass=parseFloat(list.reduce((s,w)=>s+parseFloat(w.planned_kg||0),0).toFixed(3))
         const bb_code=`${order.recipes?.code}/${seq}/${list.map(w=>'W'+w.wsad_no).join('/')}/BB${String(bb).padStart(2,'0')}`
         const lot=`L${yy}${mm}${dd}${seq}${String(bb).padStart(2,'0')}`
-        const { data: fg, error: e2 } = await supabase.from('finished_goods').insert({ production_batch_id:order.id, received_date:now.toISOString().slice(0,10), quantity_kg:mass, form:'luz', unit_type:'big_bag', unit_count:1, unit_weight_kg:mass, bb_code, bb_no:bb, lot_code:lot, created_by:profile?.id }).select().single()
+        const { data: fg, error: e2 } = await supabase.from('finished_goods').insert({ production_batch_id:order.id, received_date:prodDay, quantity_kg:mass, form:'luz', unit_type:'big_bag', unit_count:1, unit_weight_kg:mass, bb_code, bb_no:bb, lot_code:lot, created_by:profile?.id }).select().single()
         if (e2) { setError(e2.message); setSaving(false); return }
         await supabase.from('bigbag_wsady').insert(list.map(w=>({ finished_good_id:fg.id, wsad_id:w.id })))
       }
