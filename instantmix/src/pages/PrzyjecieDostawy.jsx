@@ -490,7 +490,7 @@ export default function PrzyjecieDostawy() {
               : <div><label>Dostawca</label>
                   <select value={manForm.supplier_id} onChange={e => mf('supplier_id',e.target.value)}>
                     <option value="">— wybierz —</option>
-                    {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    {suppliers.filter(s=>(s.kind||'surowce')==='opakowania').map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
                 </div>}
             <div><label>Nr partii / atestu *</label><input value={manForm.delivery_lot} onChange={e => mf('delivery_lot',e.target.value)} placeholder="np. AT-2026-..." /></div>
@@ -532,7 +532,7 @@ export default function PrzyjecieDostawy() {
               : <div><label>Dostawca</label>
                   <select value={editForm.supplier_id||''} onChange={e => ef('supplier_id',e.target.value)}>
                     <option value="">— wybierz —</option>
-                    {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    {suppliers.filter(s=>(s.kind||'surowce')==='opakowania').map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
                 </div>}
             <div><label>Nr partii *</label><input value={editForm.delivery_lot||''} onChange={e => ef('delivery_lot',e.target.value)} /></div>
